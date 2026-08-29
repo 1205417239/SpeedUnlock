@@ -439,6 +439,27 @@ static void* hooked_runtime_invoke(void *method, void *obj, void **params, void 
     return original_runtime_invoke(method, obj, params, exc);
 }
 
+// 优化版：最快路径，不匹配直接调用原始函数
+static void* hooked_runtime_invoke_fast(void *method, void *obj, void **params, void **exc) {
+    // 最快路径：方法不匹配，直接调用原始函数
+    if (method != g_elapse_method || g_elapse_multiplier <= 1.0f) {
+        return original_runtime_invoke(method, obj, params, exc);
+    }
+    
+    // ElapseTime 调用，修改返回值
+    g_elapse_call_count++;
+    void *result = original_runtime_invoke(method, obj, params, exc);
+    
+    if (result && f_object_unbox) {
+        float *fval = (float *)f_object_unbox(result);
+        if (fval) {
+            *fval = *fval * g_elapse_multiplier;
+        }
+    }
+    
+    return result;
+}
+
 #pragma mark - 安装 Hook
 static void install_game_hooks(void) {
     if (g_hook_installed) return;
@@ -494,16 +515,34 @@ static void install_game_hooks(void) {
             append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] 获取到 ElapseTime 函数指针: %p", elapseFuncPtr]);
             
             MSHookFunction(elapseFuncPtr, (void *)hooked_ElapseTime, (void **)&original_ElapseTime);
-            append_diagnostic_log(@"[SpeedUnlock][Hook] ElapseTime Hook 安装成功");
+            append_diagnostic_log(@"[SpeedUnlock][Hook] ElapseTime Hook 安装成功（方案1）");
             g_hook_installed = YES;
         } else {
-            append_diagnostic_log(@"[SpeedUnlock][Hook] 无法获取 ElapseTime 函数指针，Hook 未安装");
+            append_diagnostic_log(@"[SpeedUnlock][Hook] 无法获取 ElapseTime 函数指针");
         }
     } else {
-        append_diagnostic_log(@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer 不存在，Hook 未安装");
+        append_diagnostic_log(@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer 不存在");
     }
     
-    // 注意：移除了方案2（hook il2cpp_runtime_invoke），因为会导致卡屏
+    // 诊断 MethodInfo 结构体布局（读取前64字节，找函数指针偏移量）
+    append_diagnostic_log(@"[SpeedUnlock][Hook] 诊断 MethodInfo 结构体布局:");
+    uintptr_t *methodPtr = (uintptr_t *)elapseMethod;
+    for (int i = 0; i < 16; i++) {
+        uintptr_t val = methodPtr[i];
+        // 判断是否像函数指针（指向可执行内存，通常在 0x100000000-0x200000000 范围）
+        BOOL looksLikePointer = (val > 0x100000000 && val < 0x200000000);
+        append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook]   偏移 %d: 0x%lx %@", 
+                              i * 8, (unsigned long)val, looksLikePointer ? @"<-- 可能是函数指针" : @""]);
+    }
+    
+    // 方案2：优化版 hook il2cpp_runtime_invoke（只在方法匹配时处理，最小化开销）
+    if (!g_hook_installed && f_runtime_invoke) {
+        append_diagnostic_log(@"[SpeedUnlock][Hook] 使用方案2：优化版 hook il2cpp_runtime_invoke");
+        g_elapse_method = elapseMethod;
+        MSHookFunction((void *)f_runtime_invoke, (void *)hooked_runtime_invoke_fast, (void **)&original_runtime_invoke);
+        append_diagnostic_log(@"[SpeedUnlock][Hook] il2cpp_runtime_invoke Hook 安装成功（方案2-优化版）");
+        g_hook_installed = YES;
+    }
     
     // 查找 SpeedHackDetector 类并 hook Update（禁用加速检测）
     void *speedHackClass = NULL;
