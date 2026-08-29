@@ -21,6 +21,12 @@ typedef const char* (*il2cpp_class_get_namespace_t)(void *klass);
 typedef void* (*il2cpp_image_get_class_t)(void *image, size_t index);
 typedef size_t (*il2cpp_image_get_class_count_t)(void *image);
 typedef const char* (*il2cpp_image_get_name_t)(void *image);
+typedef void* (*il2cpp_method_get_return_type_t)(void *method);
+typedef uint32_t (*il2cpp_method_get_param_count_t)(void *method);
+typedef void* (*il2cpp_method_get_param_t)(void *method, uint32_t index);
+typedef const char* (*il2cpp_type_get_name_t)(void *type);
+typedef bool (*il2cpp_method_is_static_t)(void *method);
+typedef void* (*il2cpp_class_get_type_t)(void *klass);
 
 #pragma mark - 全局变量
 static void* il2cpp_image = NULL;
@@ -53,6 +59,12 @@ static il2cpp_class_get_namespace_t f_class_get_namespace = NULL;
 static il2cpp_image_get_class_t f_image_get_class = NULL;
 static il2cpp_image_get_class_count_t f_image_get_class_count = NULL;
 static il2cpp_image_get_name_t f_image_get_name = NULL;
+static il2cpp_method_get_return_type_t f_method_get_return_type = NULL;
+static il2cpp_method_get_param_count_t f_method_get_param_count = NULL;
+static il2cpp_method_get_param_t f_method_get_param = NULL;
+static il2cpp_type_get_name_t f_type_get_name = NULL;
+static il2cpp_method_is_static_t f_method_is_static = NULL;
+static il2cpp_class_get_type_t f_class_get_type = NULL;
 
 #pragma mark - 工具函数
 static void* get_il2cpp_func(const char *name) {
@@ -78,6 +90,12 @@ static void init_il2cpp_funcs(void) {
     f_image_get_class = (il2cpp_image_get_class_t)get_il2cpp_func("il2cpp_image_get_class");
     f_image_get_class_count = (il2cpp_image_get_class_count_t)get_il2cpp_func("il2cpp_image_get_class_count");
     f_image_get_name = (il2cpp_image_get_name_t)get_il2cpp_func("il2cpp_image_get_name");
+    f_method_get_return_type = (il2cpp_method_get_return_type_t)get_il2cpp_func("il2cpp_method_get_return_type");
+    f_method_get_param_count = (il2cpp_method_get_param_count_t)get_il2cpp_func("il2cpp_method_get_param_count");
+    f_method_get_param = (il2cpp_method_get_param_t)get_il2cpp_func("il2cpp_method_get_param");
+    f_type_get_name = (il2cpp_type_get_name_t)get_il2cpp_func("il2cpp_type_get_name");
+    f_method_is_static = (il2cpp_method_is_static_t)get_il2cpp_func("il2cpp_method_is_static");
+    f_class_get_type = (il2cpp_class_get_type_t)get_il2cpp_func("il2cpp_class_get_type");
     
     NSLog(@"[SpeedUnlock] IL2CPP funcs: domain=%d, assemblies=%d, image=%d, class=%d, method=%d, invoke=%d, box=%d, unbox=%d, getMethods=%d, getMethodName=%d, getClassName=%d, getClassNS=%d, getImageClass=%d, getImageClassCount=%d, getImageName=%d",
           f_domain_get != NULL, f_domain_get_assemblies != NULL, f_assembly_get_image != NULL,
@@ -228,6 +246,123 @@ static void diagnose_time_classes(void) {
     }
     
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][诊断] ===== 扫描完成，共找到 %d 个匹配类 =====", foundCount]);
+    save_diagnostic_log();
+}
+
+#pragma mark - 深度诊断：扫描关键类的所有方法签名
+static void deep_diagnose_key_classes(void) {
+    if (!f_domain_get || !f_domain_get_assemblies || !f_assembly_get_image || 
+        !f_class_from_name || !f_class_get_methods || !f_method_get_name ||
+        !f_method_get_return_type || !f_method_get_param_count || !f_type_get_name) {
+        append_diagnostic_log(@"[SpeedUnlock][深度诊断] 缺少必要的IL2CPP函数，跳过深度诊断");
+        save_diagnostic_log();
+        return;
+    }
+    
+    append_diagnostic_log(@"[SpeedUnlock][深度诊断] ===== 开始深度扫描关键类 =====");
+    
+    // 关键类列表（命名空间, 类名, 程序集关键词）
+    NSArray *keyClasses = @[
+        @{@"ns": @"T5Game", @"class": @"SpeedHackDetector", @"asm": @"GameBase"},
+        @{@"ns": @"T5Game", @"class": @"SpeedHackHelper", @"asm": @"GameBase"},
+        @{@"ns": @"DodGame", @"class": @"BTickWatcher", @"asm": @"DodGameLib"},
+        @{@"ns": @"DodGame", @"class": @"BTimerTick", @"asm": @"DodGameLib"},
+        @{@"ns": @"DodGame", @"class": @"FPSBehaviour", @"asm": @"GameBase"},
+    ];
+    
+    void *domain = f_domain_get();
+    size_t asmCount = 0;
+    void **assemblies = f_domain_get_assemblies(domain, &asmCount);
+    
+    for (NSDictionary *keyClass in keyClasses) {
+        NSString *ns = keyClass[@"ns"];
+        NSString *className = keyClass[@"class"];
+        NSString *asmKeyword = keyClass[@"asm"];
+        
+        append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][深度诊断] 查找类: %@.%@", ns, className]);
+        
+        // 在所有程序集中查找这个类
+        void *foundClass = NULL;
+        NSString *foundAsm = nil;
+        
+        for (size_t i = 0; i < asmCount; i++) {
+            void *image = f_assembly_get_image(assemblies[i]);
+            if (!image) continue;
+            
+            const char *imageName = f_image_get_name ? f_image_get_name(image) : "unknown";
+            NSString *imgName = [NSString stringWithUTF8String:imageName];
+            
+            if (![imgName containsString:asmKeyword]) continue;
+            
+            void *klass = f_class_from_name(image, [ns UTF8String], [className UTF8String]);
+            if (klass) {
+                foundClass = klass;
+                foundAsm = imgName;
+                break;
+            }
+        }
+        
+        if (!foundClass) {
+            append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][深度诊断]   未找到类: %@.%@", ns, className]);
+            continue;
+        }
+        
+        append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][深度诊断]   找到类: %@.%@ (程序集: %@)", ns, className, foundAsm]);
+        
+        // 列出这个类的所有方法（包括签名）
+        void *iter = NULL;
+        void *method = NULL;
+        int methodCount = 0;
+        
+        while ((method = f_class_get_methods(foundClass, &iter)) != NULL) {
+            const char *methodName = f_method_get_name(method);
+            if (!methodName) continue;
+            
+            NSString *mName = [NSString stringWithUTF8String:methodName];
+            
+            // 获取方法签名
+            uint32_t paramCount = f_method_get_param_count ? f_method_get_param_count(method) : 0;
+            bool isStatic = f_method_is_static ? f_method_is_static(method) : false;
+            
+            NSMutableString *sig = [NSMutableString stringWithFormat:@"%@ (", isStatic ? @"+" : @"-"];
+            
+            // 返回值类型
+            if (f_method_get_return_type && f_type_get_name) {
+                void *retType = f_method_get_return_type(method);
+                if (retType) {
+                    const char *retName = f_type_get_name(retType);
+                    if (retName) {
+                        [sig appendString:[NSString stringWithUTF8String:retName]];
+                    }
+                }
+            }
+            [sig appendString:@" "];
+            [sig appendString:mName];
+            [sig appendString:@":"];
+            
+            // 参数类型
+            for (uint32_t p = 0; p < paramCount; p++) {
+                if (f_method_get_param && f_type_get_name) {
+                    void *paramType = f_method_get_param(method, p);
+                    if (paramType) {
+                        const char *paramName = f_type_get_name(paramType);
+                        if (paramName) {
+                            [sig appendString:[NSString stringWithUTF8String:paramName]];
+                        }
+                    }
+                }
+                if (p < paramCount - 1) [sig appendString:@", "];
+            }
+            [sig appendString:@")"];
+            
+            append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][深度诊断]     方法: %@", sig]);
+            methodCount++;
+        }
+        
+        append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][深度诊断]   共 %d 个方法", methodCount]);
+    }
+    
+    append_diagnostic_log(@"[SpeedUnlock][深度诊断] ===== 深度扫描完成 =====");
     save_diagnostic_log();
 }
 
@@ -544,6 +679,8 @@ static void initialize() {
                 // 诊断：扫描游戏程序集中的时间管理类
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
                     diagnose_time_classes();
+                    // 深度诊断：扫描关键类的所有方法签名
+                    deep_diagnose_key_classes();
                 });
                 
                 NSLog(@"[SpeedUnlock] Init results: image=%p, set_timeScale=%p, set_maxDelta=%p, get_timeScale=%p",
