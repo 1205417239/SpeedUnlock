@@ -553,31 +553,6 @@ static void install_game_hooks(void) {
     }
     
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] ===== Hook安装完成，状态: %@ =====", g_hook_installed ? @"成功" : @"失败"]);
-    
-    // 查找 SpeedHackDetector 类并 hook Update（禁用加速检测）
-    void *speedHackClass = NULL;
-    for (size_t i = 0; i < asmCount; i++) {
-        void *image = f_assembly_get_image(assemblies[i]);
-        if (!image) continue;
-        const char *imageName = f_image_get_name ? f_image_get_name(image) : "";
-        if (!strstr(imageName, "GameBase")) continue;
-        
-        speedHackClass = f_class_from_name(image, "T5Game", "SpeedHackDetector");
-        if (speedHackClass) break;
-    }
-    
-    if (speedHackClass && f_method_get_method_pointer) {
-        void *updateMethod = f_class_get_method_from_name(speedHackClass, "Update", 0);
-        if (updateMethod) {
-            void *updateFuncPtr = f_method_get_method_pointer(updateMethod);
-            if (updateFuncPtr) {
-                MSHookFunction(updateFuncPtr, (void *)hooked_SpeedHackUpdate, (void **)&original_SpeedHackUpdate);
-                append_diagnostic_log(@"[SpeedUnlock][Hook] SpeedHackDetector.Update Hook 安装成功（加速检测已禁用）");
-            }
-        }
-    }
-    
-    append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] ===== Hook安装完成，状态: %@ =====", g_hook_installed ? @"成功" : @"失败"]);
     save_diagnostic_log();
 }
 
