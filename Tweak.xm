@@ -40,6 +40,12 @@ static ElapseTime_original_t original_ElapseTime = NULL;
 typedef void (*SpeedHackUpdate_original_t)(void *instance);
 static SpeedHackUpdate_original_t original_SpeedHackUpdate = NULL;
 
+// 方案2：hook il2cpp_runtime_invoke 拦截 ElapseTime
+static void *g_elapse_method = NULL;
+typedef void* (*runtime_invoke_original_t)(void *method, void *obj, void **params, void **exc);
+static runtime_invoke_original_t original_runtime_invoke = NULL;
+static int g_elapse_call_count = 0;
+
 #pragma mark - 全局变量
 static void* il2cpp_image = NULL;
 static void* g_set_timeScale_method = NULL;
@@ -405,17 +411,47 @@ static void hooked_SpeedHackUpdate(void *instance) {
     // 不调用 original_SpeedHackUpdate(instance)
 }
 
+static void* hooked_runtime_invoke(void *method, void *obj, void **params, void **exc) {
+    // 拦截 ElapseTime 调用
+    if (method == g_elapse_method && g_elapse_multiplier > 1.0f) {
+        g_elapse_call_count++;
+        
+        // 调用原始方法获取返回值
+        void *result = original_runtime_invoke(method, obj, params, exc);
+        
+        // 修改返回值（float）
+        if (result && f_object_unbox) {
+            float *fval = (float *)f_object_unbox(result);
+            if (fval) {
+                float original = *fval;
+                *fval = original * g_elapse_multiplier;
+                
+                if (g_elapse_call_count % 300 == 0) {
+                    NSLog(@"[SpeedUnlock][Hook] ElapseTime (方案2) 调用 #%d: %.4f -> %.4f", 
+                          g_elapse_call_count, original, *fval);
+                }
+            }
+        }
+        
+        return result;
+    }
+    
+    return original_runtime_invoke(method, obj, params, exc);
+}
+
 #pragma mark - 安装 Hook
 static void install_game_hooks(void) {
     if (g_hook_installed) return;
     
+    append_diagnostic_log(@"[SpeedUnlock][Hook] ===== 开始安装游戏时间Hook =====");
+    append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer = %p", f_method_get_method_pointer]);
+    
     if (!f_domain_get || !f_domain_get_assemblies || !f_assembly_get_image || 
-        !f_class_from_name || !f_class_get_method_from_name || !f_method_get_method_pointer) {
-        NSLog(@"[SpeedUnlock][Hook] 缺少必要的IL2CPP函数，跳过Hook安装");
+        !f_class_from_name || !f_class_get_method_from_name) {
+        append_diagnostic_log(@"[SpeedUnlock][Hook] 缺少必要的IL2CPP函数，跳过Hook安装");
+        save_diagnostic_log();
         return;
     }
-    
-    NSLog(@"[SpeedUnlock][Hook] 开始安装游戏时间Hook...");
     
     void *domain = f_domain_get();
     size_t asmCount = 0;
@@ -434,30 +470,50 @@ static void install_game_hooks(void) {
     }
     
     if (!tickWatcherClass) {
-        NSLog(@"[SpeedUnlock][Hook] 未找到 BTickWatcher 类");
+        append_diagnostic_log(@"[SpeedUnlock][Hook] 未找到 BTickWatcher 类");
+        save_diagnostic_log();
         return;
     }
+    
+    append_diagnostic_log(@"[SpeedUnlock][Hook] 找到 BTickWatcher 类");
     
     // 查找 ElapseTime 方法
     void *elapseMethod = f_class_get_method_from_name(tickWatcherClass, "ElapseTime", 0);
     if (!elapseMethod) {
-        NSLog(@"[SpeedUnlock][Hook] 未找到 ElapseTime 方法");
+        append_diagnostic_log(@"[SpeedUnlock][Hook] 未找到 ElapseTime 方法");
+        save_diagnostic_log();
         return;
     }
     
-    void *elapseFuncPtr = f_method_get_method_pointer(elapseMethod);
-    if (!elapseFuncPtr) {
-        NSLog(@"[SpeedUnlock][Hook] 无法获取 ElapseTime 函数指针");
-        return;
+    append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] 找到 ElapseTime 方法: %p", elapseMethod]);
+    
+    // 方案1：用 il2cpp_method_get_method_pointer 获取函数指针并直接 hook
+    if (f_method_get_method_pointer) {
+        void *elapseFuncPtr = f_method_get_method_pointer(elapseMethod);
+        if (elapseFuncPtr) {
+            append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] 获取到 ElapseTime 函数指针: %p", elapseFuncPtr]);
+            
+            MSHookFunction(elapseFuncPtr, (void *)hooked_ElapseTime, (void **)&original_ElapseTime);
+            append_diagnostic_log(@"[SpeedUnlock][Hook] ElapseTime Hook 安装成功（方案1：直接hook函数指针）");
+            g_hook_installed = YES;
+        } else {
+            append_diagnostic_log(@"[SpeedUnlock][Hook] 无法获取 ElapseTime 函数指针，尝试方案2");
+        }
+    } else {
+        append_diagnostic_log(@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer 不存在，尝试方案2");
     }
     
-    NSLog(@"[SpeedUnlock][Hook] 找到 ElapseTime: method=%p, func=%p", elapseMethod, elapseFuncPtr);
+    // 方案2：hook il2cpp_runtime_invoke，拦截 ElapseTime 调用
+    if (!g_hook_installed && f_runtime_invoke) {
+        append_diagnostic_log(@"[SpeedUnlock][Hook] 使用方案2：hook il2cpp_runtime_invoke 拦截 ElapseTime");
+        // 保存 ElapseTime 方法指针，在 runtime_invoke hook 中比较
+        g_elapse_method = elapseMethod;
+        MSHookFunction((void *)f_runtime_invoke, (void *)hooked_runtime_invoke, (void **)&original_runtime_invoke);
+        append_diagnostic_log(@"[SpeedUnlock][Hook] il2cpp_runtime_invoke Hook 安装成功（方案2）");
+        g_hook_installed = YES;
+    }
     
-    // Hook ElapseTime
-    MSHookFunction(elapseFuncPtr, (void *)hooked_ElapseTime, (void **)&original_ElapseTime);
-    NSLog(@"[SpeedUnlock][Hook] ElapseTime Hook 安装成功");
-    
-    // 查找 SpeedHackDetector 类并 hook Update
+    // 查找 SpeedHackDetector 类并 hook Update（禁用加速检测）
     void *speedHackClass = NULL;
     for (size_t i = 0; i < asmCount; i++) {
         void *image = f_assembly_get_image(assemblies[i]);
@@ -469,19 +525,19 @@ static void install_game_hooks(void) {
         if (speedHackClass) break;
     }
     
-    if (speedHackClass) {
+    if (speedHackClass && f_method_get_method_pointer) {
         void *updateMethod = f_class_get_method_from_name(speedHackClass, "Update", 0);
         if (updateMethod) {
             void *updateFuncPtr = f_method_get_method_pointer(updateMethod);
             if (updateFuncPtr) {
                 MSHookFunction(updateFuncPtr, (void *)hooked_SpeedHackUpdate, (void **)&original_SpeedHackUpdate);
-                NSLog(@"[SpeedUnlock][Hook] SpeedHackDetector.Update Hook 安装成功（加速检测已禁用）");
+                append_diagnostic_log(@"[SpeedUnlock][Hook] SpeedHackDetector.Update Hook 安装成功（加速检测已禁用）");
             }
         }
     }
     
-    g_hook_installed = YES;
-    NSLog(@"[SpeedUnlock][Hook] 所有Hook安装完成");
+    append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] ===== Hook安装完成，状态: %@ =====", g_hook_installed ? @"成功" : @"失败"]);
+    save_diagnostic_log();
 }
 
 static void find_il2cpp_image(void) {
