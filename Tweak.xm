@@ -20,6 +20,10 @@ static void* il2cpp_image = NULL;
 static void* g_set_timeScale_method = NULL;
 static void* g_set_maximumDeltaTime_method = NULL;
 static void* g_get_timeScale_method = NULL;
+static void* g_set_fixedDeltaTime_method = NULL;
+static void* g_set_captureFramerate_method = NULL;
+static void* g_set_targetFrameRate_method = NULL;
+static void* g_set_vSyncCount_method = NULL;
 static float g_target_speed = 8.0f;
 static BOOL g_speed_enabled = NO;
 static BOOL g_funcs_ready = NO;
@@ -116,8 +120,31 @@ static void find_time_methods(void) {
         g_get_timeScale_method = f_class_get_method_from_name(timeClass, "timeScale", 0);
     }
     
-    NSLog(@"[SpeedUnlock] Methods: set_timeScale=%p, set_maxDelta=%p, get_timeScale=%p",
-          g_set_timeScale_method, g_set_maximumDeltaTime_method, g_get_timeScale_method);
+    // set_fixedDeltaTime
+    g_set_fixedDeltaTime_method = f_class_get_method_from_name(timeClass, "set_fixedDeltaTime", 1);
+    if (!g_set_fixedDeltaTime_method) {
+        g_set_fixedDeltaTime_method = f_class_get_method_from_name(timeClass, "fixedDeltaTime", 1);
+    }
+    
+    // set_captureFramerate
+    g_set_captureFramerate_method = f_class_get_method_from_name(timeClass, "set_captureFramerate", 1);
+    
+    // Application.targetFrameRate
+    void *appClass = find_unity_class("Application");
+    if (appClass) {
+        g_set_targetFrameRate_method = f_class_get_method_from_name(appClass, "set_targetFrameRate", 1);
+    }
+    
+    // QualitySettings.vSyncCount
+    void *qualityClass = find_unity_class("QualitySettings");
+    if (qualityClass) {
+        g_set_vSyncCount_method = f_class_get_method_from_name(qualityClass, "set_vSyncCount", 1);
+    }
+    
+    NSLog(@"[SpeedUnlock] Methods: setTS=%p, setMaxDT=%p, getTS=%p, setFixedDT=%p, setCapFR=%p, setTargetFR=%p, setVSync=%p",
+          g_set_timeScale_method, g_set_maximumDeltaTime_method, g_get_timeScale_method,
+          g_set_fixedDeltaTime_method, g_set_captureFramerate_method,
+          g_set_targetFrameRate_method, g_set_vSyncCount_method);
 }
 
 #pragma mark - 设置 timeScale（直接传 float 指针，不用装箱）
@@ -149,6 +176,54 @@ static void set_maximum_delta_time(float value) {
     }
 }
 
+static void set_fixed_delta_time(float value) {
+    if (!g_set_fixedDeltaTime_method || !f_runtime_invoke) return;
+    
+    @try {
+        void *params[1] = {&value};
+        void *exc = NULL;
+        f_runtime_invoke(g_set_fixedDeltaTime_method, NULL, params, &exc);
+    } @catch (NSException *e) {
+        NSLog(@"[SpeedUnlock] set_fixed_delta_time exception: %@", e);
+    }
+}
+
+static void set_capture_framerate(int value) {
+    if (!g_set_captureFramerate_method || !f_runtime_invoke) return;
+    
+    @try {
+        void *params[1] = {&value};
+        void *exc = NULL;
+        f_runtime_invoke(g_set_captureFramerate_method, NULL, params, &exc);
+    } @catch (NSException *e) {
+        NSLog(@"[SpeedUnlock] set_capture_framerate exception: %@", e);
+    }
+}
+
+static void set_target_framerate(int value) {
+    if (!g_set_targetFrameRate_method || !f_runtime_invoke) return;
+    
+    @try {
+        void *params[1] = {&value};
+        void *exc = NULL;
+        f_runtime_invoke(g_set_targetFrameRate_method, NULL, params, &exc);
+    } @catch (NSException *e) {
+        NSLog(@"[SpeedUnlock] set_target_framerate exception: %@", e);
+    }
+}
+
+static void set_vsync_count(int value) {
+    if (!g_set_vSyncCount_method || !f_runtime_invoke) return;
+    
+    @try {
+        void *params[1] = {&value};
+        void *exc = NULL;
+        f_runtime_invoke(g_set_vSyncCount_method, NULL, params, &exc);
+    } @catch (NSException *e) {
+        NSLog(@"[SpeedUnlock] set_vsync_count exception: %@", e);
+    }
+}
+
 static float get_current_time_scale(void) {
     if (!g_get_timeScale_method || !f_runtime_invoke || !f_object_unbox) return -1;
     
@@ -174,6 +249,19 @@ static void speed_timer_callback(void) {
     
     // 设置 maximumDeltaTime 为很大的值，确保高倍加速不被限制
     set_maximum_delta_time(100.0f);
+    
+    // 设置 fixedDeltaTime 为很小的值，让物理/逻辑更新更频繁
+    // 原始值通常是 0.02（50Hz），调成 0.002（500Hz），相当于 10 倍物理更新
+    set_fixed_delta_time(0.002f);
+    
+    // 关闭 captureFramerate（设为 0 表示不限制）
+    set_capture_framerate(0);
+    
+    // 提高目标帧率
+    set_target_framerate(120);
+    
+    // 关闭垂直同步
+    set_vsync_count(0);
 }
 
 #pragma mark - 悬浮按钮
