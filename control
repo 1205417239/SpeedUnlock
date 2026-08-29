@@ -1,0 +1,9 @@
+Package: com.speedunlock.tweak
+Name: SpeedUnlock
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: 游戏加速破解-绕过4倍限制
+Maintainer: SpeedUnlock
+Author: SpeedUnlock
+Section: Tweaks
+Depends: mobilesubstrate

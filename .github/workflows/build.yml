@@ -1,0 +1,38 @@
+name: Build SpeedUnlock
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install Theos
+      run: |
+        brew install ldid xz
+        git clone --recursive https://github.com/theos/theos.git $THEOS
+        curl -LO https://github.com/theos/sdks/archive/master.zip
+        unzip master.zip -d $THEOS/sdks
+        mv $THEOS/sdks/sdks-master/*.sdk $THEOS/sdks/
+        rm -rf master.zip $THEOS/sdks/sdks-master
+      env:
+        THEOS: ${{ github.workspace }}/theos
+    
+    - name: Build
+      run: |
+        export THEOS=${{ github.workspace }}/theos
+        make clean package FINALPACKAGE=1
+      env:
+        THEOS: ${{ github.workspace }}/theos
+    
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: SpeedUnlock
+        path: |
+          packages/*.deb
+          .theos/obj/debug/SpeedUnlock.dylib
