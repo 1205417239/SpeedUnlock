@@ -120,29 +120,17 @@ static void find_time_methods(void) {
           g_set_timeScale_method, g_set_maximumDeltaTime_method, g_get_timeScale_method);
 }
 
-#pragma mark - 设置 timeScale
+#pragma mark - 设置 timeScale（直接传 float 指针，不用装箱）
 static void set_time_scale(float value) {
-    if (!g_set_timeScale_method || !f_runtime_invoke || !f_value_box) return;
+    if (!g_set_timeScale_method || !f_runtime_invoke) return;
     
     @try {
-        // 查找 float 类并 box
-        void *floatClass = find_unity_class("Single");
-        if (!floatClass) {
-            // 尝试 System.Single
-            if (il2cpp_image && f_class_from_name) {
-                floatClass = f_class_from_name(il2cpp_image, "System", "Single");
-            }
-        }
-        
-        void *boxed = NULL;
-        if (floatClass && f_value_box) {
-            boxed = f_value_box(floatClass, &value);
-        }
-        
-        if (boxed) {
-            void *params[1] = {boxed};
-            void *exc = NULL;
-            f_runtime_invoke(g_set_timeScale_method, NULL, params, &exc);
+        // IL2CPP 值类型参数直接传指针，不需要 il2cpp_value_box
+        void *params[1] = {&value};
+        void *exc = NULL;
+        f_runtime_invoke(g_set_timeScale_method, NULL, params, &exc);
+        if (exc) {
+            NSLog(@"[SpeedUnlock] set_time_scale exception: %f", value);
         }
     } @catch (NSException *e) {
         NSLog(@"[SpeedUnlock] set_time_scale exception: %@", e);
@@ -150,24 +138,12 @@ static void set_time_scale(float value) {
 }
 
 static void set_maximum_delta_time(float value) {
-    if (!g_set_maximumDeltaTime_method || !f_runtime_invoke || !f_value_box) return;
+    if (!g_set_maximumDeltaTime_method || !f_runtime_invoke) return;
     
     @try {
-        void *floatClass = find_unity_class("Single");
-        if (!floatClass && il2cpp_image && f_class_from_name) {
-            floatClass = f_class_from_name(il2cpp_image, "System", "Single");
-        }
-        
-        void *boxed = NULL;
-        if (floatClass && f_value_box) {
-            boxed = f_value_box(floatClass, &value);
-        }
-        
-        if (boxed) {
-            void *params[1] = {boxed};
-            void *exc = NULL;
-            f_runtime_invoke(g_set_maximumDeltaTime_method, NULL, params, &exc);
-        }
+        void *params[1] = {&value};
+        void *exc = NULL;
+        f_runtime_invoke(g_set_maximumDeltaTime_method, NULL, params, &exc);
     } @catch (NSException *e) {
         NSLog(@"[SpeedUnlock] set_maximum_delta_time exception: %@", e);
     }
@@ -292,10 +268,45 @@ static void initialize() {
                 find_il2cpp_image();
                 find_time_methods();
                 
-                if (il2cpp_image && g_set_timeScale_method) {
-                    NSLog(@"[SpeedUnlock] Ready! timeScale method found");
+                NSLog(@"[SpeedUnlock] Init results: image=%p, set_timeScale=%p, set_maxDelta=%p, get_timeScale=%p",
+                      il2cpp_image, g_set_timeScale_method, g_set_maximumDeltaTime_method, g_get_timeScale_method);
+                
+                // 测试设置 timeScale
+                if (g_set_timeScale_method && f_runtime_invoke) {
+                    NSLog(@"[SpeedUnlock] Testing set_timeScale(8.0)...");
+                    set_time_scale(8.0f);
                     
-                    // 启动加速定时器（每 0.1 秒强制设置一次）
+                    // 验证是否设置成功
+                    if (g_get_timeScale_method && f_object_unbox) {
+                        void *exc = NULL;
+                        void *result = f_runtime_invoke(g_get_timeScale_method, NULL, NULL, &exc);
+                        if (result && !exc) {
+                            float *fval = (float *)f_object_unbox(result);
+                            NSLog(@"[SpeedUnlock] Verify: current timeScale = %.3f", fval ? *fval : -1);
+                        }
+                    }
+                    
+                    // 恢复 1 倍
+                    set_time_scale(1.0f);
+                }
+                
+                // 总是显示悬浮按钮
+                CGSize screenSize = [UIScreen mainScreen].bounds.size;
+                g_floating_button = [[SpeedUnlockButton alloc] initWithFrame:CGRectMake(screenSize.width - 80, 300, 60, 60)];
+                UIWindow *keyWin = [UIApplication sharedApplication].keyWindow;
+                if (keyWin) {
+                    [keyWin addSubview:g_floating_button];
+                    NSLog(@"[SpeedUnlock] Floating button shown");
+                } else {
+                    NSLog(@"[SpeedUnlock] keyWindow is nil, retry in 1s");
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        UIWindow *win = [UIApplication sharedApplication].keyWindow;
+                        if (win && g_floating_button) [win addSubview:g_floating_button];
+                    });
+                }
+                
+                // 启动加速定时器（每 0.1 秒强制设置一次）
+                if (g_set_timeScale_method) {
                     dispatch_async(dispatch_get_main_queue(), ^{
                         __block void (^timerBlock)(void);
                         timerBlock = ^{
@@ -308,18 +319,7 @@ static void initialize() {
                         };
                         timerBlock();
                     });
-                    
-                    // 显示悬浮按钮
-                    CGSize screenSize = [UIScreen mainScreen].bounds.size;
-                    g_floating_button = [[SpeedUnlockButton alloc] initWithFrame:CGRectMake(screenSize.width - 80, 300, 60, 60)];
-                    UIWindow *keyWin = [UIApplication sharedApplication].keyWindow;
-                    if (keyWin) {
-                        [keyWin addSubview:g_floating_button];
-                    }
-                    
-                    NSLog(@"[SpeedUnlock] Floating button shown");
-                } else {
-                    NSLog(@"[SpeedUnlock] Failed: image=%p, set_timeScale=%p", il2cpp_image, g_set_timeScale_method);
+                    NSLog(@"[SpeedUnlock] Speed timer started");
                 }
             } @catch (NSException *e) {
                 NSLog(@"[SpeedUnlock] init exception: %@", e);
