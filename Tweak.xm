@@ -494,24 +494,16 @@ static void install_game_hooks(void) {
             append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] 获取到 ElapseTime 函数指针: %p", elapseFuncPtr]);
             
             MSHookFunction(elapseFuncPtr, (void *)hooked_ElapseTime, (void **)&original_ElapseTime);
-            append_diagnostic_log(@"[SpeedUnlock][Hook] ElapseTime Hook 安装成功（方案1：直接hook函数指针）");
+            append_diagnostic_log(@"[SpeedUnlock][Hook] ElapseTime Hook 安装成功");
             g_hook_installed = YES;
         } else {
-            append_diagnostic_log(@"[SpeedUnlock][Hook] 无法获取 ElapseTime 函数指针，尝试方案2");
+            append_diagnostic_log(@"[SpeedUnlock][Hook] 无法获取 ElapseTime 函数指针，Hook 未安装");
         }
     } else {
-        append_diagnostic_log(@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer 不存在，尝试方案2");
+        append_diagnostic_log(@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer 不存在，Hook 未安装");
     }
     
-    // 方案2：hook il2cpp_runtime_invoke，拦截 ElapseTime 调用
-    if (!g_hook_installed && f_runtime_invoke) {
-        append_diagnostic_log(@"[SpeedUnlock][Hook] 使用方案2：hook il2cpp_runtime_invoke 拦截 ElapseTime");
-        // 保存 ElapseTime 方法指针，在 runtime_invoke hook 中比较
-        g_elapse_method = elapseMethod;
-        MSHookFunction((void *)f_runtime_invoke, (void *)hooked_runtime_invoke, (void **)&original_runtime_invoke);
-        append_diagnostic_log(@"[SpeedUnlock][Hook] il2cpp_runtime_invoke Hook 安装成功（方案2）");
-        g_hook_installed = YES;
-    }
+    // 注意：移除了方案2（hook il2cpp_runtime_invoke），因为会导致卡屏
     
     // 查找 SpeedHackDetector 类并 hook Update（禁用加速检测）
     void *speedHackClass = NULL;
