@@ -27,6 +27,18 @@ typedef void* (*il2cpp_method_get_param_t)(void *method, uint32_t index);
 typedef const char* (*il2cpp_type_get_name_t)(void *type);
 typedef bool (*il2cpp_method_is_static_t)(void *method);
 typedef void* (*il2cpp_class_get_type_t)(void *klass);
+typedef void* (*il2cpp_method_get_method_pointer_t)(void *method);
+
+#pragma mark - Hook 全局变量
+static float g_elapse_multiplier = 1.0f;  // ElapseTime 返回值倍数
+static BOOL g_hook_installed = NO;
+
+// 原始函数指针
+typedef float (*ElapseTime_original_t)(void *this);
+static ElapseTime_original_t original_ElapseTime = NULL;
+
+typedef void (*SpeedHackUpdate_original_t)(void *this);
+static SpeedHackUpdate_original_t original_SpeedHackUpdate = NULL;
 
 #pragma mark - 全局变量
 static void* il2cpp_image = NULL;
@@ -366,6 +378,110 @@ static void deep_diagnose_key_classes(void) {
     save_diagnostic_log();
 }
 
+#pragma mark - Hook 函数：修改游戏时间
+static float hooked_ElapseTime(void *this) {
+    if (!original_ElapseTime) return 0;
+    
+    @try {
+        float original = original_ElapseTime(this);
+        float modified = original * g_elapse_multiplier;
+        
+        // 只在加速时记录，避免日志太多
+        static int logCounter = 0;
+        if (g_elapse_multiplier > 1.0f && (logCounter++ % 300) == 0) {
+            NSLog(@"[SpeedUnlock][Hook] ElapseTime: %.4f -> %.4f (x%.1f)", original, modified, g_elapse_multiplier);
+        }
+        
+        return modified;
+    } @catch (NSException *e) {
+        return original_ElapseTime(this);
+    }
+}
+
+static void hooked_SpeedHackUpdate(void *this) {
+    // 空转，禁用加速检测
+    // 不调用 original_SpeedHackUpdate(this)
+}
+
+#pragma mark - 安装 Hook
+static void install_game_hooks(void) {
+    if (g_hook_installed) return;
+    
+    if (!f_domain_get || !f_domain_get_assemblies || !f_assembly_get_image || 
+        !f_class_from_name || !f_class_get_method_from_name || !f_method_get_method_pointer) {
+        NSLog(@"[SpeedUnlock][Hook] 缺少必要的IL2CPP函数，跳过Hook安装");
+        return;
+    }
+    
+    NSLog(@"[SpeedUnlock][Hook] 开始安装游戏时间Hook...");
+    
+    void *domain = f_domain_get();
+    size_t asmCount = 0;
+    void **assemblies = f_domain_get_assemblies(domain, &asmCount);
+    
+    // 查找 BTickWatcher 类
+    void *tickWatcherClass = NULL;
+    for (size_t i = 0; i < asmCount; i++) {
+        void *image = f_assembly_get_image(assemblies[i]);
+        if (!image) continue;
+        const char *imageName = f_image_get_name ? f_image_get_name(image) : "";
+        if (!strstr(imageName, "DodGameLib")) continue;
+        
+        tickWatcherClass = f_class_from_name(image, "DodGame", "BTickWatcher");
+        if (tickWatcherClass) break;
+    }
+    
+    if (!tickWatcherClass) {
+        NSLog(@"[SpeedUnlock][Hook] 未找到 BTickWatcher 类");
+        return;
+    }
+    
+    // 查找 ElapseTime 方法
+    void *elapseMethod = f_class_get_method_from_name(tickWatcherClass, "ElapseTime", 0);
+    if (!elapseMethod) {
+        NSLog(@"[SpeedUnlock][Hook] 未找到 ElapseTime 方法");
+        return;
+    }
+    
+    void *elapseFuncPtr = f_method_get_method_pointer(elapseMethod);
+    if (!elapseFuncPtr) {
+        NSLog(@"[SpeedUnlock][Hook] 无法获取 ElapseTime 函数指针");
+        return;
+    }
+    
+    NSLog(@"[SpeedUnlock][Hook] 找到 ElapseTime: method=%p, func=%p", elapseMethod, elapseFuncPtr);
+    
+    // Hook ElapseTime
+    MSHookFunction(elapseFuncPtr, (void *)hooked_ElapseTime, (void **)&original_ElapseTime);
+    NSLog(@"[SpeedUnlock][Hook] ElapseTime Hook 安装成功");
+    
+    // 查找 SpeedHackDetector 类并 hook Update
+    void *speedHackClass = NULL;
+    for (size_t i = 0; i < asmCount; i++) {
+        void *image = f_assembly_get_image(assemblies[i]);
+        if (!image) continue;
+        const char *imageName = f_image_get_name ? f_image_get_name(image) : "";
+        if (!strstr(imageName, "GameBase")) continue;
+        
+        speedHackClass = f_class_from_name(image, "T5Game", "SpeedHackDetector");
+        if (speedHackClass) break;
+    }
+    
+    if (speedHackClass) {
+        void *updateMethod = f_class_get_method_from_name(speedHackClass, "Update", 0);
+        if (updateMethod) {
+            void *updateFuncPtr = f_method_get_method_pointer(updateMethod);
+            if (updateFuncPtr) {
+                MSHookFunction(updateFuncPtr, (void *)hooked_SpeedHackUpdate, (void **)&original_SpeedHackUpdate);
+                NSLog(@"[SpeedUnlock][Hook] SpeedHackDetector.Update Hook 安装成功（加速检测已禁用）");
+            }
+        }
+    }
+    
+    g_hook_installed = YES;
+    NSLog(@"[SpeedUnlock][Hook] 所有Hook安装完成");
+}
+
 static void find_il2cpp_image(void) {
     if (!f_domain_get || !f_domain_get_assemblies || !f_assembly_get_image || !f_class_from_name) return;
     
@@ -589,22 +705,42 @@ static void speed_timer_callback(void) {
 
 - (void)buttonTapped {
     @try {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"SpeedUnlock 加速破解" message:[NSString stringWithFormat:@"当前: %.0fx  %@", g_target_speed, g_speed_enabled ? @"已开启" : @"已关闭"] preferredStyle:UIAlertControllerStyleActionSheet];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"SpeedUnlock 加速破解" 
+            message:[NSString stringWithFormat:@"Unity: %.0fx %@\n游戏时间: %.1fx %@", 
+                g_target_speed, g_speed_enabled ? @"已开启" : @"已关闭",
+                g_elapse_multiplier, g_elapse_multiplier > 1.0 ? @"已开启" : @"已关闭"]
+            preferredStyle:UIAlertControllerStyleActionSheet];
         
-        NSArray *speeds = @[@1.0, @2.0, @4.0, @8.0, @16.0, @32.0];
-        for (NSNumber *s in speeds) {
-            NSString *title = [NSString stringWithFormat:@"%.0fx 加速", s.floatValue];
+        // 游戏时间加速（ElapseTime Hook）— 这是真正突破4倍限制的方法
+        [alert addAction:[UIAlertAction actionWithTitle:@"═══ 游戏时间加速（推荐）═══" style:UIAlertActionStyleDefault handler:nil]];
+        
+        NSArray *elapseSpeeds = @[@1.0, @2.0, @4.0, @6.0, @8.0, @12.0, @16.0];
+        for (NSNumber *s in elapseSpeeds) {
+            NSString *title = [NSString stringWithFormat:@"游戏时间 %.1fx", s.floatValue];
             [alert addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                g_target_speed = s.floatValue;
-                g_speed_enabled = YES;
-                NSLog(@"[SpeedUnlock] Set speed to %.0fx", g_target_speed);
+                g_elapse_multiplier = s.floatValue;
+                NSLog(@"[SpeedUnlock] ElapseTime multiplier set to %.1fx", g_elapse_multiplier);
             }]];
         }
         
-        [alert addAction:[UIAlertAction actionWithTitle:@"关闭加速" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        // Unity timeScale 加速
+        [alert addAction:[UIAlertAction actionWithTitle:@"═══ Unity timeScale（备用）═══" style:UIAlertActionStyleDefault handler:nil]];
+        
+        NSArray *speeds = @[@1.0, @2.0, @4.0, @8.0, @16.0, @32.0];
+        for (NSNumber *s in speeds) {
+            NSString *title = [NSString stringWithFormat:@"Unity %.0fx", s.floatValue];
+            [alert addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                g_target_speed = s.floatValue;
+                g_speed_enabled = YES;
+                NSLog(@"[SpeedUnlock] Unity speed set to %.0fx", g_target_speed);
+            }]];
+        }
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"全部关闭" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
             g_speed_enabled = NO;
+            g_elapse_multiplier = 1.0f;
             set_time_scale(1.0f);
-            NSLog(@"[SpeedUnlock] Speed disabled");
+            NSLog(@"[SpeedUnlock] All speed disabled");
         }]];
         
         [alert addAction:[UIAlertAction actionWithTitle:@"导出诊断日志" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
@@ -681,6 +817,8 @@ static void initialize() {
                     diagnose_time_classes();
                     // 深度诊断：扫描关键类的所有方法签名
                     deep_diagnose_key_classes();
+                    // 安装游戏时间Hook
+                    install_game_hooks();
                 });
                 
                 NSLog(@"[SpeedUnlock] Init results: image=%p, set_timeScale=%p, set_maxDelta=%p, get_timeScale=%p",
