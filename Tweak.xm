@@ -508,73 +508,51 @@ static void install_game_hooks(void) {
     
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] 找到 ElapseTime 方法: %p", elapseMethod]);
     
-    // 方案1：用 il2cpp_method_get_method_pointer 获取函数指针并直接 hook
-    if (f_method_get_method_pointer) {
-        void *elapseFuncPtr = f_method_get_method_pointer(elapseMethod);
-        if (elapseFuncPtr) {
-            append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] 获取到 ElapseTime 函数指针: %p", elapseFuncPtr]);
-            
-            MSHookFunction(elapseFuncPtr, (void *)hooked_ElapseTime, (void **)&original_ElapseTime);
-            append_diagnostic_log(@"[SpeedUnlock][Hook] ElapseTime Hook 安装成功（方案1）");
-            g_hook_installed = YES;
-        } else {
-            append_diagnostic_log(@"[SpeedUnlock][Hook] 无法获取 ElapseTime 函数指针");
-        }
-    } else {
-        append_diagnostic_log(@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer 不存在");
-    }
+    // v2.1：直接从 MethodInfo 结构体偏移量 0 读取函数指针并 hook（零开销，不卡屏）
+    append_diagnostic_log(@"[SpeedUnlock][Hook] ===== v2.1 直接Hook函数指针（偏移量0）=====");
     
-    // v2.0：纯诊断 MethodInfo 结构体布局，不 hook（避免卡屏）
-    append_diagnostic_log(@"[SpeedUnlock][诊断] ===== MethodInfo 结构体布局诊断 =====");
-    
-    // 读取 ElapseTime 方法的 MethodInfo 结构体前128字节
+    // 从偏移量 0 读取函数指针
     uintptr_t *methodPtr = (uintptr_t *)elapseMethod;
-    append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][诊断] ElapseTime MethodInfo 地址: %p", elapseMethod]);
+    void *elapseFuncPtr = (void *)methodPtr[0];
     
-    for (int i = 0; i < 16; i++) {
-        uintptr_t val = methodPtr[i];
-        // 判断是否像函数指针（指向可执行内存，通常在 0x100000000-0x200000000 范围）
-        BOOL looksLikeCodePtr = (val > 0x100000000 && val < 0x200000000);
-        // 判断是否像字符串指针（可读内存）
-        BOOL looksLikeStringPtr = (val > 0x100000000 && val < 0x300000000);
-        NSString *tag = @"";
-        if (looksLikeCodePtr) tag = @"<-- 可能是函数指针";
-        else if (looksLikeStringPtr && i > 2) tag = @"<-- 可能是字符串/类指针";
-        
-        append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][诊断]   偏移 %3d (0x%02x): 0x%016lx %@", 
-                              i * 8, i * 8, (unsigned long)val, tag]);
+    append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] ElapseTime 函数指针(偏移0): %p", elapseFuncPtr]);
+    
+    if (elapseFuncPtr && ((uintptr_t)elapseFuncPtr > 0x100000000 && (uintptr_t)elapseFuncPtr < 0x200000000)) {
+        MSHookFunction(elapseFuncPtr, (void *)hooked_ElapseTime, (void **)&original_ElapseTime);
+        append_diagnostic_log(@"[SpeedUnlock][Hook] ElapseTime Hook 安装成功（直接hook函数指针，零开销）");
+        g_hook_installed = YES;
+    } else {
+        append_diagnostic_log(@"[SpeedUnlock][Hook] ElapseTime 函数指针无效，Hook 未安装");
     }
     
-    // 同时读取另一个方法（Refresh）的 MethodInfo，比较布局
-    void *refreshMethod = f_class_get_method_from_name(tickWatcherClass, "Refresh", 0);
-    if (refreshMethod) {
-        append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][诊断] Refresh MethodInfo 地址: %p", refreshMethod]);
-        uintptr_t *refreshPtr = (uintptr_t *)refreshMethod;
-        for (int i = 0; i < 8; i++) {
-            uintptr_t val = refreshPtr[i];
-            BOOL looksLikeCodePtr = (val > 0x100000000 && val < 0x200000000);
-            append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][诊断]   Refresh 偏移 %d: 0x%lx %@", 
-                                  i * 8, (unsigned long)val, looksLikeCodePtr ? @"<-- 函数指针" : @""]);
-        }
+    // 同时禁用 SpeedHackDetector.Update（也用偏移量0读取函数指针）
+    void *speedHackClass = NULL;
+    for (size_t i = 0; i < asmCount; i++) {
+        void *image = f_assembly_get_image(assemblies[i]);
+        if (!image) continue;
+        const char *imageName = f_image_get_name ? f_image_get_name(image) : "";
+        if (!strstr(imageName, "GameBase")) continue;
         
-        // 比较两个方法的函数指针（如果偏移量正确，两个方法的函数指针应该不同）
-        append_diagnostic_log(@"[SpeedUnlock][诊断] 比较两个方法的各偏移量值（不同的偏移量可能是函数指针）:");
-        for (int i = 0; i < 8; i++) {
-            uintptr_t val1 = methodPtr[i];
-            uintptr_t val2 = refreshPtr[i];
-            if (val1 != val2) {
-                append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][诊断]   偏移 %d: ElapseTime=0x%lx, Refresh=0x%lx (不同，可能是函数指针)", 
-                                      i * 8, (unsigned long)val1, (unsigned long)val2]);
+        speedHackClass = f_class_from_name(image, "T5Game", "SpeedHackDetector");
+        if (speedHackClass) break;
+    }
+    
+    if (speedHackClass) {
+        void *updateMethod = f_class_get_method_from_name(speedHackClass, "Update", 0);
+        if (updateMethod) {
+            uintptr_t *updatePtr = (uintptr_t *)updateMethod;
+            void *updateFuncPtr = (void *)updatePtr[0];
+            
+            append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] SpeedHackDetector.Update 函数指针(偏移0): %p", updateFuncPtr]);
+            
+            if (updateFuncPtr && ((uintptr_t)updateFuncPtr > 0x100000000 && (uintptr_t)updateFuncPtr < 0x200000000)) {
+                MSHookFunction(updateFuncPtr, (void *)hooked_SpeedHackUpdate, (void **)&original_SpeedHackUpdate);
+                append_diagnostic_log(@"[SpeedUnlock][Hook] SpeedHackDetector.Update Hook 安装成功（加速检测已禁用）");
             }
         }
     }
     
-    // 尝试用偏移量 0 读取函数指针并 hook（如果正确，就不需要 hook il2cpp_runtime_invoke）
-    // 先不 hook，只诊断，避免卡屏
-    append_diagnostic_log(@"[SpeedUnlock][诊断] ===== 诊断完成，未安装任何Hook（避免卡屏）=====");
-    append_diagnostic_log(@"[SpeedUnlock][诊断] 下一步：根据偏移量直接读取函数指针并 hook");
-    
-    g_hook_installed = NO;  // 不安装 hook，避免卡屏
+    append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] ===== Hook安装完成，状态: %@ =====", g_hook_installed ? @"成功" : @"失败"]);
     
     // 查找 SpeedHackDetector 类并 hook Update（禁用加速检测）
     void *speedHackClass = NULL;
