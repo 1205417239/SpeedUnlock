@@ -34,6 +34,8 @@ static void* g_set_vSyncCount_method = NULL;
 static float g_target_speed = 8.0f;
 static BOOL g_speed_enabled = NO;
 static BOOL g_funcs_ready = NO;
+static NSString *g_diagnostic_log_path = nil;
+static NSMutableString *g_diagnostic_log = nil;
 
 // IL2CPP 函数指针
 static il2cpp_domain_get_t f_domain_get = NULL;
@@ -98,15 +100,49 @@ static void* find_unity_class(const char *name) {
 }
 
 #pragma mark - 诊断：扫描游戏程序集中的时间管理类
+static void append_diagnostic_log(NSString *line) {
+    if (!g_diagnostic_log) g_diagnostic_log = [NSMutableString string];
+    [g_diagnostic_log appendString:line];
+    [g_diagnostic_log appendString:@"\n"];
+    NSLog(@"%@", line);
+}
+
+static void save_diagnostic_log(void) {
+    if (!g_diagnostic_log) return;
+    
+    @try {
+        NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        NSString *docDir = paths.firstObject;
+        if (!docDir) docDir = @"/tmp";
+        
+        NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+        fmt.dateFormat = @"yyyy-MM-dd_HH-mm-ss";
+        NSString *filename = [NSString stringWithFormat:@"SpeedUnlock_Diagnostic_%@.txt", [fmt stringFromDate:[NSDate date]]];
+        g_diagnostic_log_path = [docDir stringByAppendingPathComponent:filename];
+        
+        NSError *error = nil;
+        [g_diagnostic_log writeToFile:g_diagnostic_log_path atomically:YES encoding:NSUTF8StringEncoding error:&error];
+        
+        if (error) {
+            NSLog(@"[SpeedUnlock][诊断] 保存文件失败: %@", error);
+        } else {
+            NSLog(@"[SpeedUnlock][诊断] 诊断日志已保存: %@", g_diagnostic_log_path);
+        }
+    } @catch (NSException *e) {
+        NSLog(@"[SpeedUnlock][诊断] 保存文件异常: %@", e);
+    }
+}
+
 static void diagnose_time_classes(void) {
     if (!f_domain_get || !f_domain_get_assemblies || !f_assembly_get_image || 
         !f_image_get_class || !f_image_get_class_count || !f_class_get_name ||
         !f_class_get_methods || !f_method_get_name) {
-        NSLog(@"[SpeedUnlock][诊断] 缺少必要的IL2CPP函数，跳过诊断");
+        append_diagnostic_log(@"[SpeedUnlock][诊断] 缺少必要的IL2CPP函数，跳过诊断");
+        save_diagnostic_log();
         return;
     }
     
-    NSLog(@"[SpeedUnlock][诊断] ===== 开始扫描时间管理类 =====");
+    append_diagnostic_log(@"[SpeedUnlock][诊断] ===== 开始扫描时间管理类 =====");
     
     void *domain = f_domain_get();
     size_t asmCount = 0;
@@ -155,8 +191,8 @@ static void diagnose_time_classes(void) {
             
             const char *nameSpace = f_class_get_namespace ? f_class_get_namespace(klass) : "";
             
-            NSLog(@"[SpeedUnlock][诊断] 找到匹配类: %@.%@ (程序集: %@)", 
-                  [NSString stringWithUTF8String:nameSpace], clsName, imgName);
+            append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][诊断] 找到匹配类: %@.%@ (程序集: %@)", 
+                  [NSString stringWithUTF8String:nameSpace], clsName, imgName]);
             
             // 列出这个类的所有方法
             void *iter = NULL;
@@ -175,7 +211,7 @@ static void diagnose_time_classes(void) {
                         [mName.lowercaseString containsString:@"delta"] ||
                         [mName.lowercaseString containsString:@"set"] ||
                         [mName.lowercaseString containsString:@"get"]) {
-                        NSLog(@"[SpeedUnlock][诊断]   方法: %@", mName);
+                        append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][诊断]   方法: %@", mName]);
                         methodCount++;
                     }
                 }
@@ -183,7 +219,7 @@ static void diagnose_time_classes(void) {
             
             foundCount++;
             if (foundCount >= 50) {
-                NSLog(@"[SpeedUnlock][诊断] 已找到50个匹配类，停止扫描");
+                append_diagnostic_log(@"[SpeedUnlock][诊断] 已找到50个匹配类，停止扫描");
                 break;
             }
         }
@@ -191,7 +227,8 @@ static void diagnose_time_classes(void) {
         if (foundCount >= 50) break;
     }
     
-    NSLog(@"[SpeedUnlock][诊断] ===== 扫描完成，共找到 %d 个匹配类 =====", foundCount);
+    append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][诊断] ===== 扫描完成，共找到 %d 个匹配类 =====", foundCount]);
+    save_diagnostic_log();
 }
 
 static void find_il2cpp_image(void) {
@@ -433,6 +470,33 @@ static void speed_timer_callback(void) {
             g_speed_enabled = NO;
             set_time_scale(1.0f);
             NSLog(@"[SpeedUnlock] Speed disabled");
+        }]];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"导出诊断日志" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            @try {
+                if (!g_diagnostic_log_path || ![[NSFileManager defaultManager] fileExistsAtPath:g_diagnostic_log_path]) {
+                    UIAlertController *tip = [UIAlertController alertControllerWithTitle:@"提示" message:@"诊断日志还没生成，请等10秒后再试" preferredStyle:UIAlertControllerStyleAlert];
+                    [tip addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
+                    UIViewController *r = [UIApplication sharedApplication].keyWindow.rootViewController;
+                    while (r.presentedViewController) r = r.presentedViewController;
+                    [r presentViewController:tip animated:YES completion:nil];
+                    return;
+                }
+                
+                NSURL *fileURL = [NSURL fileURLWithPath:g_diagnostic_log_path];
+                UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:@[fileURL] applicationActivities:nil];
+                
+                if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+                    activityVC.popoverPresentationController.sourceView = self.button;
+                    activityVC.popoverPresentationController.sourceRect = self.button.bounds;
+                }
+                
+                UIViewController *root = [UIApplication sharedApplication].keyWindow.rootViewController;
+                while (root.presentedViewController) root = root.presentedViewController;
+                [root presentViewController:activityVC animated:YES completion:nil];
+            } @catch (NSException *e) {
+                NSLog(@"[SpeedUnlock] 导出诊断日志异常: %@", e);
+            }
         }]];
         
         [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
