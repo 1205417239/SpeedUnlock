@@ -34,10 +34,10 @@ static float g_elapse_multiplier = 1.0f;  // ElapseTime 返回值倍数
 static BOOL g_hook_installed = NO;
 
 // 原始函数指针
-typedef float (*ElapseTime_original_t)(void *this);
+typedef float (*ElapseTime_original_t)(void *instance);
 static ElapseTime_original_t original_ElapseTime = NULL;
 
-typedef void (*SpeedHackUpdate_original_t)(void *this);
+typedef void (*SpeedHackUpdate_original_t)(void *instance);
 static SpeedHackUpdate_original_t original_SpeedHackUpdate = NULL;
 
 #pragma mark - 全局变量
@@ -77,6 +77,7 @@ static il2cpp_method_get_param_t f_method_get_param = NULL;
 static il2cpp_type_get_name_t f_type_get_name = NULL;
 static il2cpp_method_is_static_t f_method_is_static = NULL;
 static il2cpp_class_get_type_t f_class_get_type = NULL;
+static il2cpp_method_get_method_pointer_t f_method_get_method_pointer = NULL;
 
 #pragma mark - 工具函数
 static void* get_il2cpp_func(const char *name) {
@@ -108,6 +109,7 @@ static void init_il2cpp_funcs(void) {
     f_type_get_name = (il2cpp_type_get_name_t)get_il2cpp_func("il2cpp_type_get_name");
     f_method_is_static = (il2cpp_method_is_static_t)get_il2cpp_func("il2cpp_method_is_static");
     f_class_get_type = (il2cpp_class_get_type_t)get_il2cpp_func("il2cpp_class_get_type");
+    f_method_get_method_pointer = (il2cpp_method_get_method_pointer_t)get_il2cpp_func("il2cpp_method_get_method_pointer");
     
     NSLog(@"[SpeedUnlock] IL2CPP funcs: domain=%d, assemblies=%d, image=%d, class=%d, method=%d, invoke=%d, box=%d, unbox=%d, getMethods=%d, getMethodName=%d, getClassName=%d, getClassNS=%d, getImageClass=%d, getImageClassCount=%d, getImageName=%d",
           f_domain_get != NULL, f_domain_get_assemblies != NULL, f_assembly_get_image != NULL,
@@ -379,11 +381,11 @@ static void deep_diagnose_key_classes(void) {
 }
 
 #pragma mark - Hook 函数：修改游戏时间
-static float hooked_ElapseTime(void *this) {
+static float hooked_ElapseTime(void *instance) {
     if (!original_ElapseTime) return 0;
     
     @try {
-        float original = original_ElapseTime(this);
+        float original = original_ElapseTime(instance);
         float modified = original * g_elapse_multiplier;
         
         // 只在加速时记录，避免日志太多
@@ -394,13 +396,13 @@ static float hooked_ElapseTime(void *this) {
         
         return modified;
     } @catch (NSException *e) {
-        return original_ElapseTime(this);
+        return original_ElapseTime(instance);
     }
 }
 
-static void hooked_SpeedHackUpdate(void *this) {
+static void hooked_SpeedHackUpdate(void *instance) {
     // 空转，禁用加速检测
-    // 不调用 original_SpeedHackUpdate(this)
+    // 不调用 original_SpeedHackUpdate(instance)
 }
 
 #pragma mark - 安装 Hook
