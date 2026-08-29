@@ -14,6 +14,13 @@ typedef void* (*il2cpp_value_box_t)(void* klass, void* value);
 typedef void* (*il2cpp_class_get_field_from_name_t)(void* klass, const char* name);
 typedef void* (*il2cpp_field_get_value_t)(void* obj, void* field);
 typedef void* (*il2cpp_object_unbox_t)(void* obj);
+typedef void* (*il2cpp_class_get_methods_t)(void *klass, void **iter);
+typedef const char* (*il2cpp_method_get_name_t)(void *method);
+typedef const char* (*il2cpp_class_get_name_t)(void *klass);
+typedef const char* (*il2cpp_class_get_namespace_t)(void *klass);
+typedef void* (*il2cpp_image_get_class_t)(void *image, size_t index);
+typedef size_t (*il2cpp_image_get_class_count_t)(void *image);
+typedef const char* (*il2cpp_image_get_name_t)(void *image);
 
 #pragma mark - 全局变量
 static void* il2cpp_image = NULL;
@@ -37,6 +44,13 @@ static il2cpp_class_get_method_from_name_t f_class_get_method_from_name = NULL;
 static il2cpp_runtime_invoke_t f_runtime_invoke = NULL;
 static il2cpp_value_box_t f_value_box = NULL;
 static il2cpp_object_unbox_t f_object_unbox = NULL;
+static il2cpp_class_get_methods_t f_class_get_methods = NULL;
+static il2cpp_method_get_name_t f_method_get_name = NULL;
+static il2cpp_class_get_name_t f_class_get_name = NULL;
+static il2cpp_class_get_namespace_t f_class_get_namespace = NULL;
+static il2cpp_image_get_class_t f_image_get_class = NULL;
+static il2cpp_image_get_class_count_t f_image_get_class_count = NULL;
+static il2cpp_image_get_name_t f_image_get_name = NULL;
 
 #pragma mark - 工具函数
 static void* get_il2cpp_func(const char *name) {
@@ -55,11 +69,21 @@ static void init_il2cpp_funcs(void) {
     f_runtime_invoke = (il2cpp_runtime_invoke_t)get_il2cpp_func("il2cpp_runtime_invoke");
     f_value_box = (il2cpp_value_box_t)get_il2cpp_func("il2cpp_value_box");
     f_object_unbox = (il2cpp_object_unbox_t)get_il2cpp_func("il2cpp_object_unbox");
+    f_class_get_methods = (il2cpp_class_get_methods_t)get_il2cpp_func("il2cpp_class_get_methods");
+    f_method_get_name = (il2cpp_method_get_name_t)get_il2cpp_func("il2cpp_method_get_name");
+    f_class_get_name = (il2cpp_class_get_name_t)get_il2cpp_func("il2cpp_class_get_name");
+    f_class_get_namespace = (il2cpp_class_get_namespace_t)get_il2cpp_func("il2cpp_class_get_namespace");
+    f_image_get_class = (il2cpp_image_get_class_t)get_il2cpp_func("il2cpp_image_get_class");
+    f_image_get_class_count = (il2cpp_image_get_class_count_t)get_il2cpp_func("il2cpp_image_get_class_count");
+    f_image_get_name = (il2cpp_image_get_name_t)get_il2cpp_func("il2cpp_image_get_name");
     
-    NSLog(@"[SpeedUnlock] IL2CPP funcs: domain=%d, assemblies=%d, image=%d, class=%d, method=%d, invoke=%d, box=%d, unbox=%d",
+    NSLog(@"[SpeedUnlock] IL2CPP funcs: domain=%d, assemblies=%d, image=%d, class=%d, method=%d, invoke=%d, box=%d, unbox=%d, getMethods=%d, getMethodName=%d, getClassName=%d, getClassNS=%d, getImageClass=%d, getImageClassCount=%d, getImageName=%d",
           f_domain_get != NULL, f_domain_get_assemblies != NULL, f_assembly_get_image != NULL,
           f_class_from_name != NULL, f_class_get_method_from_name != NULL, f_runtime_invoke != NULL,
-          f_value_box != NULL, f_object_unbox != NULL);
+          f_value_box != NULL, f_object_unbox != NULL,
+          f_class_get_methods != NULL, f_method_get_name != NULL, f_class_get_name != NULL,
+          f_class_get_namespace != NULL, f_image_get_class != NULL, f_image_get_class_count != NULL,
+          f_image_get_name != NULL);
 }
 
 static void* find_unity_class(const char *name) {
@@ -71,6 +95,103 @@ static void* find_unity_class(const char *name) {
         if (klass) return klass;
     }
     return NULL;
+}
+
+#pragma mark - 诊断：扫描游戏程序集中的时间管理类
+static void diagnose_time_classes(void) {
+    if (!f_domain_get || !f_domain_get_assemblies || !f_assembly_get_image || 
+        !f_image_get_class || !f_image_get_class_count || !f_class_get_name ||
+        !f_class_get_methods || !f_method_get_name) {
+        NSLog(@"[SpeedUnlock][诊断] 缺少必要的IL2CPP函数，跳过诊断");
+        return;
+    }
+    
+    NSLog(@"[SpeedUnlock][诊断] ===== 开始扫描时间管理类 =====");
+    
+    void *domain = f_domain_get();
+    size_t asmCount = 0;
+    void **assemblies = f_domain_get_assemblies(domain, &asmCount);
+    
+    // 关键词列表
+    const char *keywords[] = {"engine", "time", "speed", "scale", "tick", "fps", "frame", "game", "play", NULL};
+    
+    int foundCount = 0;
+    
+    for (size_t i = 0; i < asmCount; i++) {
+        void *image = f_assembly_get_image(assemblies[i]);
+        if (!image) continue;
+        
+        const char *imageName = f_image_get_name ? f_image_get_name(image) : "unknown";
+        
+        // 只扫描游戏程序集（非 UnityEngine、非 System、非 mscorlib）
+        NSString *imgName = [NSString stringWithUTF8String:imageName];
+        if ([imgName containsString:@"UnityEngine"] || [imgName containsString:@"System"] ||
+            [imgName containsString:@"mscorlib"] || [imgName containsString:@"netstandard"] ||
+            [imgName containsString:@"Mono."] || [imgName containsString:@"I18N"]) {
+            continue;
+        }
+        
+        size_t classCount = f_image_get_class_count(image);
+        
+        for (size_t j = 0; j < classCount; j++) {
+            void *klass = f_image_get_class(image, j);
+            if (!klass) continue;
+            
+            const char *className = f_class_get_name(klass);
+            if (!className) continue;
+            
+            NSString *clsName = [NSString stringWithUTF8String:className];
+            
+            // 检查是否包含关键词
+            BOOL matched = NO;
+            for (int k = 0; keywords[k]; k++) {
+                if ([clsName.lowercaseString containsString:[NSString stringWithUTF8String:keywords[k]]]) {
+                    matched = YES;
+                    break;
+                }
+            }
+            
+            if (!matched) continue;
+            
+            const char *nameSpace = f_class_get_namespace ? f_class_get_namespace(klass) : "";
+            
+            NSLog(@"[SpeedUnlock][诊断] 找到匹配类: %@.%@ (程序集: %@)", 
+                  [NSString stringWithUTF8String:nameSpace], clsName, imgName);
+            
+            // 列出这个类的所有方法
+            void *iter = NULL;
+            void *method = NULL;
+            int methodCount = 0;
+            while ((method = f_class_get_methods(klass, &iter)) != NULL) {
+                const char *methodName = f_method_get_name(method);
+                if (methodName) {
+                    NSString *mName = [NSString stringWithUTF8String:methodName];
+                    // 只记录包含时间相关关键词的方法
+                    if ([mName.lowercaseString containsString:@"time"] || 
+                        [mName.lowercaseString containsString:@"speed"] ||
+                        [mName.lowercaseString containsString:@"scale"] ||
+                        [mName.lowercaseString containsString:@"tick"] ||
+                        [mName.lowercaseString containsString:@"fps"] ||
+                        [mName.lowercaseString containsString:@"delta"] ||
+                        [mName.lowercaseString containsString:@"set"] ||
+                        [mName.lowercaseString containsString:@"get"]) {
+                        NSLog(@"[SpeedUnlock][诊断]   方法: %@", mName);
+                        methodCount++;
+                    }
+                }
+            }
+            
+            foundCount++;
+            if (foundCount >= 50) {
+                NSLog(@"[SpeedUnlock][诊断] 已找到50个匹配类，停止扫描");
+                break;
+            }
+        }
+        
+        if (foundCount >= 50) break;
+    }
+    
+    NSLog(@"[SpeedUnlock][诊断] ===== 扫描完成，共找到 %d 个匹配类 =====", foundCount);
 }
 
 static void find_il2cpp_image(void) {
@@ -355,6 +476,11 @@ static void initialize() {
                 init_il2cpp_funcs();
                 find_il2cpp_image();
                 find_time_methods();
+                
+                // 诊断：扫描游戏程序集中的时间管理类
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+                    diagnose_time_classes();
+                });
                 
                 NSLog(@"[SpeedUnlock] Init results: image=%p, set_timeScale=%p, set_maxDelta=%p, get_timeScale=%p",
                       il2cpp_image, g_set_timeScale_method, g_set_maximumDeltaTime_method, g_get_timeScale_method);
