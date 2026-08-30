@@ -72,6 +72,7 @@ static void* g_set_targetFrameRate_method = NULL;
 static void* g_set_vSyncCount_method = NULL;
 static float g_target_speed = 8.0f;
 static BOOL g_speed_enabled = NO;
+static NSTimer *g_fps_maintain_timer = nil;  // v3.4: 强制维持60帧的定时器
 static BOOL g_funcs_ready = NO;
 static NSString *g_diagnostic_log_path = nil;
 static NSMutableString *g_diagnostic_log = nil;
@@ -630,7 +631,7 @@ static void* hooked_runtime_invoke_fast(void *method, void *obj, void **params, 
 static void install_game_hooks(void) {
     if (g_hook_installed) return;
     
-    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v3.3 =====");
+    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v3.4 =====");
     append_diagnostic_log(@"[SpeedUnlock][Hook] ===== 开始安装游戏时间Hook =====");
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer = %p", f_method_get_method_pointer]);
     
@@ -1028,8 +1029,9 @@ static void speed_timer_callback(void) {
     // 关闭 captureFramerate（设为 0 表示不限制）
     set_capture_framerate(0);
     
-    // 提高目标帧率
-    set_target_framerate(120);
+    // v3.4: 强行维持60帧，设备跑满60FPS，timeScale=8就能实现真正的8倍效果
+    // 之前设120帧，设备只能跑60，实际加速=8×(60/120)=4倍
+    set_target_framerate(60);
     
     // 关闭垂直同步
     set_vsync_count(0);
@@ -1095,6 +1097,15 @@ static void speed_timer_callback(void) {
                 g_target_speed = s.floatValue;
                 g_speed_enabled = YES;
                 NSLog(@"[SpeedUnlock] Unity speed set to %.0fx", g_target_speed);
+                
+                // v3.4: 启动定时器，每0.5秒强制设置一次60帧，防止游戏改回去
+                if (g_fps_maintain_timer) [g_fps_maintain_timer invalidate];
+                g_fps_maintain_timer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
+                    if (g_speed_enabled) {
+                        set_target_framerate(60);
+                        set_vsync_count(0);
+                    }
+                }];
             }]];
         }
         
@@ -1102,6 +1113,11 @@ static void speed_timer_callback(void) {
             g_speed_enabled = NO;
             g_elapse_multiplier = 1.0f;
             set_time_scale(1.0f);
+            // v3.4: 停止60帧维持定时器
+            if (g_fps_maintain_timer) {
+                [g_fps_maintain_timer invalidate];
+                g_fps_maintain_timer = nil;
+            }
             NSLog(@"[SpeedUnlock] All speed disabled");
         }]];
         
