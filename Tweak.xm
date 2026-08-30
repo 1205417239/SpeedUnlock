@@ -418,15 +418,16 @@ static void hooked_SpeedHackUpdate(void *instance) {
 }
 
 #pragma mark - v2.5: Hook BTimerTick 构造函数（修改计时器间隔）
-typedef void (*BTimerTick_ctor_original_t)(void *instance, double interval, void *method);
+// v2.6: 修正签名，构造函数是 .ctor(float interval, OnTick callback)
+typedef void (*BTimerTick_ctor_original_t)(void *instance, float interval, void *onTick, void *method);
 static BTimerTick_ctor_original_t original_BTimerTick_ctor = NULL;
 static int g_btimer_ctor_call_count = 0;
 
-static void hooked_BTimerTick_ctor(void *instance, double interval, void *method) {
+static void hooked_BTimerTick_ctor(void *instance, float interval, void *onTick, void *method) {
     g_btimer_ctor_call_count++;
     
     // 把间隔时间除以加速倍率，让计时器更快触发
-    double modifiedInterval = interval;
+    float modifiedInterval = interval;
     if (g_elapse_multiplier > 1.0f && interval > 0) {
         modifiedInterval = interval / g_elapse_multiplier;
         
@@ -437,7 +438,7 @@ static void hooked_BTimerTick_ctor(void *instance, double interval, void *method
         }
     }
     
-    original_BTimerTick_ctor(instance, modifiedInterval, method);
+    original_BTimerTick_ctor(instance, modifiedInterval, onTick, method);
 }
 
 #pragma mark - v2.5: Hook FPSBehaviour.UpdateScale（时间缩放更新）
@@ -512,7 +513,7 @@ static void* hooked_runtime_invoke_fast(void *method, void *obj, void **params, 
 static void install_game_hooks(void) {
     if (g_hook_installed) return;
     
-    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.5 =====");
+    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.6 =====");
     append_diagnostic_log(@"[SpeedUnlock][Hook] ===== 开始安装游戏时间Hook =====");
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer = %p", f_method_get_method_pointer]);
     
@@ -578,10 +579,23 @@ static void install_game_hooks(void) {
     // 只保留 ElapseTime Hook，先确认加速效果
     append_diagnostic_log(@"[SpeedUnlock][Hook] v2.3: 已禁用 SpeedHackDetector.Update Hook（排查服务器列表问题）");
     
-    // v2.5：Hook BTimerTick 构造函数（修改计时器间隔）
-    void *btimerClass = f_class_from_name(il2cpp_image, "T5Game", "BTimerTick");
+    // v2.6：Hook BTimerTick 构造函数（修正命名空间和参数）
+    // BTimerTick 在 DodGame 命名空间，程序集 DodGameLib.dll
+    // 构造函数: .ctor(float interval, OnTick callback) — 2个参数
+    void *btimerClass = NULL;
+    for (size_t i = 0; i < asmCount; i++) {
+        void *image = f_assembly_get_image(assemblies[i]);
+        if (!image) continue;
+        btimerClass = f_class_from_name(image, "DodGame", "BTimerTick");
+        if (btimerClass) break;
+    }
+    
     if (btimerClass) {
-        void *ctorMethod = f_class_get_method_from_name(btimerClass, ".ctor", 1);
+        // 尝试不同参数数量的构造函数
+        void *ctorMethod = f_class_get_method_from_name(btimerClass, ".ctor", 2);
+        if (!ctorMethod) ctorMethod = f_class_get_method_from_name(btimerClass, ".ctor", 3);
+        if (!ctorMethod) ctorMethod = f_class_get_method_from_name(btimerClass, ".ctor", 4);
+        
         if (ctorMethod) {
             uintptr_t *ctorPtr = (uintptr_t *)ctorMethod;
             void *ctorFuncPtr = (void *)ctorPtr[0];
@@ -599,8 +613,16 @@ static void install_game_hooks(void) {
         append_diagnostic_log(@"[SpeedUnlock][Hook] 未找到 BTimerTick 类");
     }
     
-    // v2.5：Hook FPSBehaviour.UpdateScale（时间缩放更新）
-    void *fpsClass = f_class_from_name(il2cpp_image, "T5Game", "FPSBehaviour");
+    // v2.6：Hook FPSBehaviour.UpdateScale（修正命名空间）
+    // FPSBehaviour 在 DodGame 命名空间，程序集 GameBase.dll
+    void *fpsClass = NULL;
+    for (size_t i = 0; i < asmCount; i++) {
+        void *image = f_assembly_get_image(assemblies[i]);
+        if (!image) continue;
+        fpsClass = f_class_from_name(image, "DodGame", "FPSBehaviour");
+        if (fpsClass) break;
+    }
+    
     if (fpsClass) {
         void *updateScaleMethod = f_class_get_method_from_name(fpsClass, "UpdateScale", 0);
         if (updateScaleMethod) {
