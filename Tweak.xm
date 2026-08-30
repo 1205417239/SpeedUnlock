@@ -11,8 +11,6 @@ typedef void* (*il2cpp_class_from_name_t)(void* image, const char* namespaze, co
 typedef void* (*il2cpp_class_get_method_from_name_t)(void* klass, const char* name, int argsCount);
 typedef void* (*il2cpp_runtime_invoke_t)(void* method, void* obj, void** params, void** exc);
 typedef void* (*il2cpp_value_box_t)(void* klass, void* value);
-typedef void* (*il2cpp_class_get_field_from_name_t)(void* klass, const char* name);
-typedef void* (*il2cpp_field_get_value_t)(void* obj, void* field);
 typedef void* (*il2cpp_object_unbox_t)(void* obj);
 typedef void* (*il2cpp_class_get_methods_t)(void *klass, void **iter);
 typedef const char* (*il2cpp_method_get_name_t)(void *method);
