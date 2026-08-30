@@ -468,7 +468,30 @@ static void hooked_BTimerTick_ctor(void *instance, float interval, void *onTick,
     original_BTimerTick_ctor(instance, modifiedInterval, onTick, method);
 }
 
-#pragma mark - v2.5: Hook FPSBehaviour.UpdateScale（时间缩放更新）
+#pragma mark - v2.8: Hook Unity Time.timeScale（Unity标准时间控制）
+typedef void (*Unity_Time_set_timeScale_original_t)(float value, void *method);
+static Unity_Time_set_timeScale_original_t original_unity_set_timeScale = NULL;
+static int g_unity_set_timescale_call_count = 0;
+static float g_unity_last_timescale = 1.0f;
+
+static void hooked_unity_set_timeScale(float value, void *method) {
+    g_unity_set_timescale_call_count++;
+    g_unity_last_timescale = value;
+    
+    // 如果游戏设置的 timeScale 小于我们想要的倍率，就改成我们的倍率
+    float modifiedValue = value;
+    if (g_elapse_multiplier > 1.0f && value < g_elapse_multiplier) {
+        modifiedValue = g_elapse_multiplier;
+    }
+    
+    static int logCounter = 0;
+    if ((logCounter++ % 100) == 0) {
+        NSLog(@"[SpeedUnlock][Hook] Unity.Time.set_timeScale 调用 #%d: %.2f -> %.2f", 
+              g_unity_set_timescale_call_count, value, modifiedValue);
+    }
+    
+    original_unity_set_timeScale(modifiedValue, method);
+}
 typedef void (*FPSBehaviour_UpdateScale_original_t)(void *instance, void *method);
 static FPSBehaviour_UpdateScale_original_t original_FPSBehaviour_UpdateScale = NULL;
 static int g_fps_update_scale_call_count = 0;
@@ -554,7 +577,7 @@ static void* hooked_runtime_invoke_fast(void *method, void *obj, void **params, 
 static void install_game_hooks(void) {
     if (g_hook_installed) return;
     
-    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.7 =====");
+    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.8 =====");
     append_diagnostic_log(@"[SpeedUnlock][Hook] ===== 开始安装游戏时间Hook =====");
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer = %p", f_method_get_method_pointer]);
     
@@ -720,6 +743,34 @@ static void install_game_hooks(void) {
         }
     } else {
         append_diagnostic_log(@"[SpeedUnlock][Hook] 未找到 FPSBehaviour 类");
+    }
+    
+    // v2.8: Hook Unity Time.timeScale（Unity标准时间控制）
+    void *unityTimeClass = NULL;
+    for (size_t i = 0; i < asmCount; i++) {
+        void *image = f_assembly_get_image(assemblies[i]);
+        if (!image) continue;
+        unityTimeClass = f_class_from_name(image, "UnityEngine", "Time");
+        if (unityTimeClass) break;
+    }
+    
+    if (unityTimeClass) {
+        void *setTimeScaleMethod = f_class_get_method_from_name(unityTimeClass, "set_timeScale", 1);
+        if (setTimeScaleMethod) {
+            uintptr_t *setTimeScalePtr = (uintptr_t *)setTimeScaleMethod;
+            void *setTimeScaleFuncPtr = (void *)setTimeScalePtr[0];
+            
+            append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] Unity.Time.set_timeScale 函数指针(偏移0): %p", setTimeScaleFuncPtr]);
+            
+            if (setTimeScaleFuncPtr && ((uintptr_t)setTimeScaleFuncPtr > 0x100000000 && (uintptr_t)setTimeScaleFuncPtr < 0x200000000)) {
+                MSHookFunction(setTimeScaleFuncPtr, (void *)hooked_unity_set_timeScale, (void **)&original_unity_set_timeScale);
+                append_diagnostic_log(@"[SpeedUnlock][Hook] Unity.Time.set_timeScale Hook 安装成功");
+            }
+        } else {
+            append_diagnostic_log(@"[SpeedUnlock][Hook] 未找到 Unity.Time.set_timeScale 方法");
+        }
+    } else {
+        append_diagnostic_log(@"[SpeedUnlock][Hook] 未找到 UnityEngine.Time 类");
     }
     
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] ===== Hook安装完成，状态: %@ =====", g_hook_installed ? @"成功" : @"失败"]);
@@ -993,6 +1044,8 @@ static void speed_timer_callback(void) {
                 append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] ElapseTime 累计调用次数: %d", g_elapse_call_count]);
                 append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] BTimerTick.ctor 累计调用次数: %d", g_btimer_ctor_call_count]);
                 append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] FPSBehaviour.UpdateScale 累计调用次数: %d", g_fps_update_scale_call_count]);
+                append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] Unity.Time.set_timeScale 累计调用次数: %d", g_unity_set_timescale_call_count]);
+                append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] Unity.Time 最后设置的 timeScale: %.2f", g_unity_last_timescale]);
                 append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] 当前加速倍率: %.1f", g_elapse_multiplier]);
                 save_diagnostic_log();
                 
