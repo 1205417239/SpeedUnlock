@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
 #import <substrate.h>
+#import <execinfo.h>
 
 #pragma mark - IL2CPP 函数指针类型
 typedef void* (*il2cpp_domain_get_t)(void);
@@ -478,6 +479,12 @@ static float g_unity_last_timescale = 1.0f;
 static float g_timescale_history[10] = {0};
 static int g_timescale_history_index = 0;
 
+// v3.3: 调用栈记录，找到是谁在强制设置timeScale=4
+#define MAX_BACKTRACE_LOGS 5
+static NSString *g_backtrace_logs[MAX_BACKTRACE_LOGS];
+static int g_backtrace_log_index = 0;
+static int g_backtrace_log_count = 0;
+
 // v2.9: hook get_timeScale
 typedef float (*Unity_Time_get_timeScale_original_t)(void *method);
 static Unity_Time_get_timeScale_original_t original_unity_get_timeScale = NULL;
@@ -501,6 +508,30 @@ static void hooked_unity_set_timeScale(float value, void *method) {
     // v3.2: 记录历史
     g_timescale_history[g_timescale_history_index] = value;
     g_timescale_history_index = (g_timescale_history_index + 1) % 10;
+    
+    // v3.3: 当游戏设置timeScale=4时，记录调用栈，找到是谁在强制限速
+    if (value == 4.0f && g_unity_set_timescale_call_count <= 20) {
+        void *callstack[16];
+        int frames = backtrace(callstack, 16);
+        char **strs = backtrace_symbols(callstack, frames);
+        if (strs) {
+            NSMutableString *bt = [NSMutableString stringWithFormat:@"[SpeedUnlock][调用栈] set_timeScale(4) #%d:\n", g_unity_set_timescale_call_count];
+            for (int i = 0; i < frames; i++) {
+                [bt appendFormat:@"  %s\n", strs[i]];
+            }
+            free(strs);
+            
+            // 保存到全局，最多5条
+            if (g_backtrace_logs[g_backtrace_log_index]) {
+                // 释放旧的
+            }
+            g_backtrace_logs[g_backtrace_log_index] = [bt copy];
+            g_backtrace_log_index = (g_backtrace_log_index + 1) % MAX_BACKTRACE_LOGS;
+            if (g_backtrace_log_count < MAX_BACKTRACE_LOGS) g_backtrace_log_count++;
+            
+            NSLog(@"%@", bt);
+        }
+    }
     
     // v3.2: 固定乘以2，代码里不出现8
     // 游戏设4 → 4×2=8，游戏设1 → 1×2=2
@@ -599,7 +630,7 @@ static void* hooked_runtime_invoke_fast(void *method, void *obj, void **params, 
 static void install_game_hooks(void) {
     if (g_hook_installed) return;
     
-    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v3.2 =====");
+    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v3.3 =====");
     append_diagnostic_log(@"[SpeedUnlock][Hook] ===== 开始安装游戏时间Hook =====");
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer = %p", f_method_get_method_pointer]);
     
@@ -1089,6 +1120,16 @@ static void speed_timer_callback(void) {
                     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时]   [%d]: %.2f", i, g_timescale_history[idx]]);
                 }
                 append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] 当前加速倍率: %.1f", g_elapse_multiplier]);
+                
+                // v3.3: 输出调用栈，找到是谁在强制设置timeScale=4
+                append_diagnostic_log(@"[SpeedUnlock][调用栈] ===== set_timeScale(4) 调用栈记录 =====");
+                for (int i = 0; i < g_backtrace_log_count; i++) {
+                    int idx = (g_backtrace_log_index + i) % MAX_BACKTRACE_LOGS;
+                    if (g_backtrace_logs[idx]) {
+                        append_diagnostic_log(g_backtrace_logs[idx]);
+                    }
+                }
+                
                 save_diagnostic_log();
                 
                 if (!g_diagnostic_log_path || ![[NSFileManager defaultManager] fileExistsAtPath:g_diagnostic_log_path]) {
