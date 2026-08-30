@@ -474,18 +474,42 @@ static Unity_Time_set_timeScale_original_t original_unity_set_timeScale = NULL;
 static int g_unity_set_timescale_call_count = 0;
 static float g_unity_last_timescale = 1.0f;
 
+// v2.9: 记录最近10次设置值
+static float g_timescale_history[10] = {0};
+static int g_timescale_history_index = 0;
+
+// v2.9: hook get_timeScale
+typedef float (*Unity_Time_get_timeScale_original_t)(void *method);
+static Unity_Time_get_timeScale_original_t original_unity_get_timeScale = NULL;
+static int g_unity_get_timescale_call_count = 0;
+
+static float hooked_unity_get_timeScale(void *method) {
+    g_unity_get_timescale_call_count++;
+    float original = original_unity_get_timeScale(method);
+    
+    // 如果加速启用，返回我们的倍率
+    if (g_elapse_multiplier > 1.0f && original > 0) {
+        return g_elapse_multiplier;
+    }
+    return original;
+}
+
 static void hooked_unity_set_timeScale(float value, void *method) {
     g_unity_set_timescale_call_count++;
     g_unity_last_timescale = value;
     
-    // 如果游戏设置的 timeScale 小于我们想要的倍率，就改成我们的倍率
+    // 记录历史
+    g_timescale_history[g_timescale_history_index] = value;
+    g_timescale_history_index = (g_timescale_history_index + 1) % 10;
+    
+    // 如果游戏设置的 timeScale 大于0且小于我们想要的倍率，就改成我们的倍率
     float modifiedValue = value;
-    if (g_elapse_multiplier > 1.0f && value < g_elapse_multiplier) {
+    if (g_elapse_multiplier > 1.0f && value > 0 && value < g_elapse_multiplier) {
         modifiedValue = g_elapse_multiplier;
     }
     
     static int logCounter = 0;
-    if ((logCounter++ % 100) == 0) {
+    if ((logCounter++ % 10) == 0) {
         NSLog(@"[SpeedUnlock][Hook] Unity.Time.set_timeScale 调用 #%d: %.2f -> %.2f", 
               g_unity_set_timescale_call_count, value, modifiedValue);
     }
@@ -577,7 +601,7 @@ static void* hooked_runtime_invoke_fast(void *method, void *obj, void **params, 
 static void install_game_hooks(void) {
     if (g_hook_installed) return;
     
-    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.8 =====");
+    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.9 =====");
     append_diagnostic_log(@"[SpeedUnlock][Hook] ===== 开始安装游戏时间Hook =====");
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer = %p", f_method_get_method_pointer]);
     
@@ -768,6 +792,20 @@ static void install_game_hooks(void) {
             }
         } else {
             append_diagnostic_log(@"[SpeedUnlock][Hook] 未找到 Unity.Time.set_timeScale 方法");
+        }
+        
+        // v2.9: hook get_timeScale
+        void *getTimeScaleMethod = f_class_get_method_from_name(unityTimeClass, "get_timeScale", 0);
+        if (getTimeScaleMethod) {
+            uintptr_t *getTimeScalePtr = (uintptr_t *)getTimeScaleMethod;
+            void *getTimeScaleFuncPtr = (void *)getTimeScalePtr[0];
+            
+            append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] Unity.Time.get_timeScale 函数指针(偏移0): %p", getTimeScaleFuncPtr]);
+            
+            if (getTimeScaleFuncPtr && ((uintptr_t)getTimeScaleFuncPtr > 0x100000000 && (uintptr_t)getTimeScaleFuncPtr < 0x200000000)) {
+                MSHookFunction(getTimeScaleFuncPtr, (void *)hooked_unity_get_timeScale, (void **)&original_unity_get_timeScale);
+                append_diagnostic_log(@"[SpeedUnlock][Hook] Unity.Time.get_timeScale Hook 安装成功");
+            }
         }
     } else {
         append_diagnostic_log(@"[SpeedUnlock][Hook] 未找到 UnityEngine.Time 类");
@@ -1045,7 +1083,15 @@ static void speed_timer_callback(void) {
                 append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] BTimerTick.ctor 累计调用次数: %d", g_btimer_ctor_call_count]);
                 append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] FPSBehaviour.UpdateScale 累计调用次数: %d", g_fps_update_scale_call_count]);
                 append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] Unity.Time.set_timeScale 累计调用次数: %d", g_unity_set_timescale_call_count]);
+                append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] Unity.Time.get_timeScale 累计调用次数: %d", g_unity_get_timescale_call_count]);
                 append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] Unity.Time 最后设置的 timeScale: %.2f", g_unity_last_timescale]);
+                append_diagnostic_log(@"[SpeedUnlock][运行时] 最近10次timeScale设置值:");
+                for (int i = 0; i < 10; i++) {
+                    int idx = (g_timescale_history_index + i) % 10;
+                    if (g_timescale_history[idx] != 0 || i == 0) {
+                        append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时]   [%d]: %.2f", i, g_timescale_history[idx]]);
+                    }
+                }
                 append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] 当前加速倍率: %.1f", g_elapse_multiplier]);
                 save_diagnostic_log();
                 
