@@ -29,6 +29,25 @@ typedef bool (*il2cpp_method_is_static_t)(void *method);
 typedef void* (*il2cpp_class_get_type_t)(void *klass);
 typedef void* (*il2cpp_method_get_method_pointer_t)(void *method);
 
+// v2.7: 字段相关函数
+typedef void* (*il2cpp_class_get_fields_t)(void *klass, void *iter);
+typedef const char* (*il2cpp_field_get_name_t)(void *field);
+typedef void* (*il2cpp_field_get_type_t)(void *field);
+typedef int (*il2cpp_field_get_offset_t)(void *field);
+typedef bool (*il2cpp_field_is_static_t)(void *field);
+typedef void (*il2cpp_field_get_value_t)(void *obj, void *field, void *value);
+typedef void (*il2cpp_field_set_value_t)(void *obj, void *field, void *value);
+typedef void* (*il2cpp_class_get_field_from_name_t)(void *klass, const char *name);
+
+static il2cpp_class_get_fields_t f_class_get_fields = NULL;
+static il2cpp_field_get_name_t f_field_get_name = NULL;
+static il2cpp_field_get_type_t f_field_get_type = NULL;
+static il2cpp_field_get_offset_t f_field_get_offset = NULL;
+static il2cpp_field_is_static_t f_field_is_static = NULL;
+static il2cpp_field_get_value_t f_field_get_value = NULL;
+static il2cpp_field_set_value_t f_field_set_value = NULL;
+static il2cpp_class_get_field_from_name_t f_class_get_field_from_name = NULL;
+
 #pragma mark - Hook 全局变量
 static float g_elapse_multiplier = 1.0f;  // ElapseTime 返回值倍数
 static BOOL g_hook_installed = NO;
@@ -113,6 +132,16 @@ static void init_il2cpp_funcs(void) {
     f_method_is_static = (il2cpp_method_is_static_t)get_il2cpp_func("il2cpp_method_is_static");
     f_class_get_type = (il2cpp_class_get_type_t)get_il2cpp_func("il2cpp_class_get_type");
     f_method_get_method_pointer = (il2cpp_method_get_method_pointer_t)get_il2cpp_func("il2cpp_method_get_method_pointer");
+    
+    // v2.7: 字段相关函数
+    f_class_get_fields = (il2cpp_class_get_fields_t)get_il2cpp_func("il2cpp_class_get_fields");
+    f_field_get_name = (il2cpp_field_get_name_t)get_il2cpp_func("il2cpp_field_get_name");
+    f_field_get_type = (il2cpp_field_get_type_t)get_il2cpp_func("il2cpp_field_get_type");
+    f_field_get_offset = (il2cpp_field_get_offset_t)get_il2cpp_func("il2cpp_field_get_offset");
+    f_field_is_static = (il2cpp_field_is_static_t)get_il2cpp_func("il2cpp_field_is_static");
+    f_field_get_value = (il2cpp_field_get_value_t)get_il2cpp_func("il2cpp_field_get_value");
+    f_field_set_value = (il2cpp_field_set_value_t)get_il2cpp_func("il2cpp_field_set_value");
+    f_class_get_field_from_name = (il2cpp_class_get_field_from_name_t)get_il2cpp_func("il2cpp_class_get_field_from_name");
     
     NSLog(@"[SpeedUnlock] IL2CPP funcs: domain=%d, assemblies=%d, image=%d, class=%d, method=%d, invoke=%d, box=%d, unbox=%d, getMethods=%d, getMethodName=%d, getClassName=%d, getClassNS=%d, getImageClass=%d, getImageClassCount=%d, getImageName=%d",
           f_domain_get != NULL, f_domain_get_assemblies != NULL, f_assembly_get_image != NULL,
@@ -446,18 +475,32 @@ typedef void (*FPSBehaviour_UpdateScale_original_t)(void *instance, void *method
 static FPSBehaviour_UpdateScale_original_t original_FPSBehaviour_UpdateScale = NULL;
 static int g_fps_update_scale_call_count = 0;
 
+// v2.7: timeScale 字段
+static void *g_timescale_field = NULL;
+static float g_timescale_original = 1.0f;
+
 static void hooked_FPSBehaviour_UpdateScale(void *instance, void *method) {
     g_fps_update_scale_call_count++;
     
+    // v2.7: 如果找到 timeScale 字段，修改它的值
+    if (g_timescale_field && instance && g_elapse_multiplier > 1.0f) {
+        float currentValue = 0;
+        f_field_get_value(instance, g_timescale_field, &currentValue);
+        
+        // 只在原始值不是我们设置的值时才修改（避免重复修改）
+        float targetValue = g_elapse_multiplier;
+        if (currentValue != targetValue) {
+            f_field_set_value(instance, g_timescale_field, &targetValue);
+            
+            static int logCounter = 0;
+            if ((logCounter++ % 300) == 0) {
+                NSLog(@"[SpeedUnlock][Hook] FPSBehaviour.UpdateScale 修改 timeScale: %.2f -> %.2f", currentValue, targetValue);
+            }
+        }
+    }
+    
     // 先调用原始方法
     original_FPSBehaviour_UpdateScale(instance, method);
-    
-    // 然后尝试修改时间缩放（如果能找到 timeScale 字段）
-    // 这里先只记录调用次数，确认这个方法是否被频繁调用
-    static int logCounter = 0;
-    if ((logCounter++ % 300) == 0) {
-        NSLog(@"[SpeedUnlock][Hook] FPSBehaviour.UpdateScale 调用 #%d", g_fps_update_scale_call_count);
-    }
 }
 
 static void* hooked_runtime_invoke(void *method, void *obj, void **params, void **exc) {
@@ -513,7 +556,7 @@ static void* hooked_runtime_invoke_fast(void *method, void *obj, void **params, 
 static void install_game_hooks(void) {
     if (g_hook_installed) return;
     
-    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.6 =====");
+    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.7 =====");
     append_diagnostic_log(@"[SpeedUnlock][Hook] ===== 开始安装游戏时间Hook =====");
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer = %p", f_method_get_method_pointer]);
     
@@ -624,6 +667,45 @@ static void install_game_hooks(void) {
     }
     
     if (fpsClass) {
+        // v2.7: 遍历所有字段，找到 timeScale 相关字段
+        append_diagnostic_log(@"[SpeedUnlock][Hook] FPSBehaviour 类字段列表:");
+        if (f_class_get_fields && f_field_get_name && f_field_get_offset) {
+            void *iter = NULL;
+            void *field = NULL;
+            int fieldIndex = 0;
+            while ((field = f_class_get_fields(fpsClass, &iter)) != NULL) {
+                const char *fieldName = f_field_get_name(field);
+                int offset = f_field_get_offset(field);
+                BOOL isStatic = f_field_is_static ? f_field_is_static(field) : NO;
+                
+                append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook]   字段[%d]: %s (偏移: %d, %@)", 
+                                      fieldIndex, fieldName, offset, isStatic ? @"静态" : @"实例"]);
+                
+                // 查找 timeScale 相关字段
+                NSString *nameStr = [NSString stringWithUTF8String:fieldName];
+                if ([nameStr.lowercaseString containsString:@"timescale"] || 
+                    [nameStr.lowercaseString containsString:@"time_scale"] ||
+                    [nameStr.lowercaseString isEqualToString:@"scale"] ||
+                    [nameStr.lowercaseString containsString:@"speed"]) {
+                    if (!isStatic) {
+                        g_timescale_field = field;
+                        append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook]   --> 找到 timeScale 字段: %s (偏移: %d)", fieldName, offset]);
+                    }
+                }
+                fieldIndex++;
+            }
+        }
+        
+        // 如果没找到，尝试直接按名字查找
+        if (!g_timescale_field && f_class_get_field_from_name) {
+            g_timescale_field = f_class_get_field_from_name(fpsClass, "timeScale");
+            if (!g_timescale_field) g_timescale_field = f_class_get_field_from_name(fpsClass, "TimeScale");
+            if (!g_timescale_field) g_timescale_field = f_class_get_field_from_name(fpsClass, "scale");
+            if (g_timescale_field) {
+                append_diagnostic_log(@"[SpeedUnlock][Hook] 通过名字找到 timeScale 字段");
+            }
+        }
+        
         void *updateScaleMethod = f_class_get_method_from_name(fpsClass, "UpdateScale", 0);
         if (updateScaleMethod) {
             uintptr_t *updateScalePtr = (uintptr_t *)updateScaleMethod;
