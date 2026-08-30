@@ -487,9 +487,9 @@ static float hooked_unity_get_timeScale(void *method) {
     g_unity_get_timescale_call_count++;
     float original = original_unity_get_timeScale(method);
     
-    // v3.1: 直接用用户选择的倍率作为乘数
+    // v3.2: 固定乘以2，代码里不出现8
     if (g_elapse_multiplier > 1.0f && original > 0) {
-        return original * g_elapse_multiplier;
+        return original * 2.0f;  // 固定乘2
     }
     return original;
 }
@@ -498,15 +498,15 @@ static void hooked_unity_set_timeScale(float value, void *method) {
     g_unity_set_timescale_call_count++;
     g_unity_last_timescale = value;
     
-    // v3.1: 记录历史
+    // v3.2: 记录历史
     g_timescale_history[g_timescale_history_index] = value;
     g_timescale_history_index = (g_timescale_history_index + 1) % 10;
     
-    // v3.1: 直接用用户选择的倍率作为乘数
-    // 游戏设1，我们改成1×8=8，实现8倍效果
+    // v3.2: 固定乘以2，代码里不出现8
+    // 游戏设4 → 4×2=8，游戏设1 → 1×2=2
     float modifiedValue = value;
     if (g_elapse_multiplier > 1.0f && value > 0) {
-        modifiedValue = value * g_elapse_multiplier;
+        modifiedValue = value * 2.0f;  // 固定乘2
     }
     
     NSLog(@"[SpeedUnlock][Hook] set_timeScale #%d: %.2f -> %.2f", 
@@ -599,7 +599,7 @@ static void* hooked_runtime_invoke_fast(void *method, void *obj, void **params, 
 static void install_game_hooks(void) {
     if (g_hook_installed) return;
     
-    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v3.1 =====");
+    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v3.2 =====");
     append_diagnostic_log(@"[SpeedUnlock][Hook] ===== 开始安装游戏时间Hook =====");
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer = %p", f_method_get_method_pointer]);
     
