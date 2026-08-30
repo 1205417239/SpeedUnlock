@@ -33,9 +33,7 @@ typedef void* (*il2cpp_method_get_method_pointer_t)(void *method);
 static float g_elapse_multiplier = 1.0f;  // ElapseTime 返回值倍数
 static BOOL g_hook_installed = NO;
 
-// 原始函数指针
-typedef float (*ElapseTime_original_t)(void *instance);
-static ElapseTime_original_t original_ElapseTime = NULL;
+// 原始函数指针（v2.4 移到 hooked_ElapseTime 前面，修正调用约定）
 
 typedef void (*SpeedHackUpdate_original_t)(void *instance);
 static SpeedHackUpdate_original_t original_SpeedHackUpdate = NULL;
@@ -387,22 +385,31 @@ static void deep_diagnose_key_classes(void) {
 }
 
 #pragma mark - Hook 函数：修改游戏时间
-static float hooked_ElapseTime(void *instance) {
+// v2.4：修正 IL2CPP 调用约定，添加 MethodInfo* 参数
+typedef float (*ElapseTime_original_t)(void *instance, void *method);
+static ElapseTime_original_t original_ElapseTime = NULL;
+
+static int g_elapse_call_count = 0;
+
+static float hooked_ElapseTime(void *instance, void *method) {
     if (!original_ElapseTime) return 0;
     
+    g_elapse_call_count++;
+    
     @try {
-        float original = original_ElapseTime(instance);
+        float original = original_ElapseTime(instance, method);
         float modified = original * g_elapse_multiplier;
         
         // 只在加速时记录，避免日志太多
         static int logCounter = 0;
         if (g_elapse_multiplier > 1.0f && (logCounter++ % 300) == 0) {
-            NSLog(@"[SpeedUnlock][Hook] ElapseTime: %.4f -> %.4f (x%.1f)", original, modified, g_elapse_multiplier);
+            NSLog(@"[SpeedUnlock][Hook] ElapseTime 调用 #%d: %.4f -> %.4f (x%.1f)", 
+                  g_elapse_call_count, original, modified, g_elapse_multiplier);
         }
         
         return modified;
     } @catch (NSException *e) {
-        return original_ElapseTime(instance);
+        return original_ElapseTime(instance, method);
     }
 }
 
@@ -464,7 +471,7 @@ static void* hooked_runtime_invoke_fast(void *method, void *obj, void **params, 
 static void install_game_hooks(void) {
     if (g_hook_installed) return;
     
-    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.3 =====");
+    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.4 =====");
     append_diagnostic_log(@"[SpeedUnlock][Hook] ===== 开始安装游戏时间Hook =====");
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer = %p", f_method_get_method_pointer]);
     
@@ -797,6 +804,11 @@ static void speed_timer_callback(void) {
         
         [alert addAction:[UIAlertAction actionWithTitle:@"导出诊断日志" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             @try {
+                // v2.4：导出前追加 ElapseTime 调用次数
+                append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] ElapseTime 累计调用次数: %d", g_elapse_call_count]);
+                append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] 当前加速倍率: %.1f", g_elapse_multiplier]);
+                save_diagnostic_log();
+                
                 if (!g_diagnostic_log_path || ![[NSFileManager defaultManager] fileExistsAtPath:g_diagnostic_log_path]) {
                     UIAlertController *tip = [UIAlertController alertControllerWithTitle:@"提示" message:@"诊断日志还没生成，请等10秒后再试" preferredStyle:UIAlertControllerStyleAlert];
                     [tip addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
