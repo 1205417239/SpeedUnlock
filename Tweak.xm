@@ -417,6 +417,48 @@ static void hooked_SpeedHackUpdate(void *instance) {
     // 不调用 original_SpeedHackUpdate(instance)
 }
 
+#pragma mark - v2.5: Hook BTimerTick 构造函数（修改计时器间隔）
+typedef void (*BTimerTick_ctor_original_t)(void *instance, double interval, void *method);
+static BTimerTick_ctor_original_t original_BTimerTick_ctor = NULL;
+static int g_btimer_ctor_call_count = 0;
+
+static void hooked_BTimerTick_ctor(void *instance, double interval, void *method) {
+    g_btimer_ctor_call_count++;
+    
+    // 把间隔时间除以加速倍率，让计时器更快触发
+    double modifiedInterval = interval;
+    if (g_elapse_multiplier > 1.0f && interval > 0) {
+        modifiedInterval = interval / g_elapse_multiplier;
+        
+        static int logCounter = 0;
+        if ((logCounter++ % 100) == 0) {
+            NSLog(@"[SpeedUnlock][Hook] BTimerTick.ctor 调用 #%d: %.4f -> %.4f (x%.1f)", 
+                  g_btimer_ctor_call_count, interval, modifiedInterval, g_elapse_multiplier);
+        }
+    }
+    
+    original_BTimerTick_ctor(instance, modifiedInterval, method);
+}
+
+#pragma mark - v2.5: Hook FPSBehaviour.UpdateScale（时间缩放更新）
+typedef void (*FPSBehaviour_UpdateScale_original_t)(void *instance, void *method);
+static FPSBehaviour_UpdateScale_original_t original_FPSBehaviour_UpdateScale = NULL;
+static int g_fps_update_scale_call_count = 0;
+
+static void hooked_FPSBehaviour_UpdateScale(void *instance, void *method) {
+    g_fps_update_scale_call_count++;
+    
+    // 先调用原始方法
+    original_FPSBehaviour_UpdateScale(instance, method);
+    
+    // 然后尝试修改时间缩放（如果能找到 timeScale 字段）
+    // 这里先只记录调用次数，确认这个方法是否被频繁调用
+    static int logCounter = 0;
+    if ((logCounter++ % 300) == 0) {
+        NSLog(@"[SpeedUnlock][Hook] FPSBehaviour.UpdateScale 调用 #%d", g_fps_update_scale_call_count);
+    }
+}
+
 static void* hooked_runtime_invoke(void *method, void *obj, void **params, void **exc) {
     // 拦截 ElapseTime 调用
     if (method == g_elapse_method && g_elapse_multiplier > 1.0f) {
@@ -470,7 +512,7 @@ static void* hooked_runtime_invoke_fast(void *method, void *obj, void **params, 
 static void install_game_hooks(void) {
     if (g_hook_installed) return;
     
-    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.4 =====");
+    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.5 =====");
     append_diagnostic_log(@"[SpeedUnlock][Hook] ===== 开始安装游戏时间Hook =====");
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer = %p", f_method_get_method_pointer]);
     
@@ -535,6 +577,48 @@ static void install_game_hooks(void) {
     // v2.3：暂时禁用 SpeedHackDetector.Update Hook（可能导致服务器列表打不开）
     // 只保留 ElapseTime Hook，先确认加速效果
     append_diagnostic_log(@"[SpeedUnlock][Hook] v2.3: 已禁用 SpeedHackDetector.Update Hook（排查服务器列表问题）");
+    
+    // v2.5：Hook BTimerTick 构造函数（修改计时器间隔）
+    void *btimerClass = f_class_from_name(il2cpp_image, "T5Game", "BTimerTick");
+    if (btimerClass) {
+        void *ctorMethod = f_class_get_method_from_name(btimerClass, ".ctor", 1);
+        if (ctorMethod) {
+            uintptr_t *ctorPtr = (uintptr_t *)ctorMethod;
+            void *ctorFuncPtr = (void *)ctorPtr[0];
+            
+            append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] BTimerTick.ctor 函数指针(偏移0): %p", ctorFuncPtr]);
+            
+            if (ctorFuncPtr && ((uintptr_t)ctorFuncPtr > 0x100000000 && (uintptr_t)ctorFuncPtr < 0x200000000)) {
+                MSHookFunction(ctorFuncPtr, (void *)hooked_BTimerTick_ctor, (void **)&original_BTimerTick_ctor);
+                append_diagnostic_log(@"[SpeedUnlock][Hook] BTimerTick.ctor Hook 安装成功");
+            }
+        } else {
+            append_diagnostic_log(@"[SpeedUnlock][Hook] 未找到 BTimerTick.ctor 方法");
+        }
+    } else {
+        append_diagnostic_log(@"[SpeedUnlock][Hook] 未找到 BTimerTick 类");
+    }
+    
+    // v2.5：Hook FPSBehaviour.UpdateScale（时间缩放更新）
+    void *fpsClass = f_class_from_name(il2cpp_image, "T5Game", "FPSBehaviour");
+    if (fpsClass) {
+        void *updateScaleMethod = f_class_get_method_from_name(fpsClass, "UpdateScale", 0);
+        if (updateScaleMethod) {
+            uintptr_t *updateScalePtr = (uintptr_t *)updateScaleMethod;
+            void *updateScaleFuncPtr = (void *)updateScalePtr[0];
+            
+            append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] FPSBehaviour.UpdateScale 函数指针(偏移0): %p", updateScaleFuncPtr]);
+            
+            if (updateScaleFuncPtr && ((uintptr_t)updateScaleFuncPtr > 0x100000000 && (uintptr_t)updateScaleFuncPtr < 0x200000000)) {
+                MSHookFunction(updateScaleFuncPtr, (void *)hooked_FPSBehaviour_UpdateScale, (void **)&original_FPSBehaviour_UpdateScale);
+                append_diagnostic_log(@"[SpeedUnlock][Hook] FPSBehaviour.UpdateScale Hook 安装成功");
+            }
+        } else {
+            append_diagnostic_log(@"[SpeedUnlock][Hook] 未找到 FPSBehaviour.UpdateScale 方法");
+        }
+    } else {
+        append_diagnostic_log(@"[SpeedUnlock][Hook] 未找到 FPSBehaviour 类");
+    }
     
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] ===== Hook安装完成，状态: %@ =====", g_hook_installed ? @"成功" : @"失败"]);
     save_diagnostic_log();
@@ -805,6 +889,8 @@ static void speed_timer_callback(void) {
             @try {
                 // v2.4：导出前追加 ElapseTime 调用次数
                 append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] ElapseTime 累计调用次数: %d", g_elapse_call_count]);
+                append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] BTimerTick.ctor 累计调用次数: %d", g_btimer_ctor_call_count]);
+                append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] FPSBehaviour.UpdateScale 累计调用次数: %d", g_fps_update_scale_call_count]);
                 append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][运行时] 当前加速倍率: %.1f", g_elapse_multiplier]);
                 save_diagnostic_log();
                 
