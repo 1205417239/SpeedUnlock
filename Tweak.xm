@@ -42,7 +42,6 @@ static SpeedHackUpdate_original_t original_SpeedHackUpdate = NULL;
 static void *g_elapse_method = NULL;
 typedef void* (*runtime_invoke_original_t)(void *method, void *obj, void **params, void **exc);
 static runtime_invoke_original_t original_runtime_invoke = NULL;
-static int g_elapse_call_count = 0;
 
 #pragma mark - 全局变量
 static void* il2cpp_image = NULL;
