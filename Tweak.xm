@@ -464,7 +464,7 @@ static void* hooked_runtime_invoke_fast(void *method, void *obj, void **params, 
 static void install_game_hooks(void) {
     if (g_hook_installed) return;
     
-    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.2 =====");
+    append_diagnostic_log(@"[SpeedUnlock][版本] ===== SpeedUnlock v2.3 =====");
     append_diagnostic_log(@"[SpeedUnlock][Hook] ===== 开始安装游戏时间Hook =====");
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] il2cpp_method_get_method_pointer = %p", f_method_get_method_pointer]);
     
@@ -526,32 +526,9 @@ static void install_game_hooks(void) {
         append_diagnostic_log(@"[SpeedUnlock][Hook] ElapseTime 函数指针无效，Hook 未安装");
     }
     
-    // 同时禁用 SpeedHackDetector.Update（也用偏移量0读取函数指针）
-    void *speedHackClass = NULL;
-    for (size_t i = 0; i < asmCount; i++) {
-        void *image = f_assembly_get_image(assemblies[i]);
-        if (!image) continue;
-        const char *imageName = f_image_get_name ? f_image_get_name(image) : "";
-        if (!strstr(imageName, "GameBase")) continue;
-        
-        speedHackClass = f_class_from_name(image, "T5Game", "SpeedHackDetector");
-        if (speedHackClass) break;
-    }
-    
-    if (speedHackClass) {
-        void *updateMethod = f_class_get_method_from_name(speedHackClass, "Update", 0);
-        if (updateMethod) {
-            uintptr_t *updatePtr = (uintptr_t *)updateMethod;
-            void *updateFuncPtr = (void *)updatePtr[0];
-            
-            append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] SpeedHackDetector.Update 函数指针(偏移0): %p", updateFuncPtr]);
-            
-            if (updateFuncPtr && ((uintptr_t)updateFuncPtr > 0x100000000 && (uintptr_t)updateFuncPtr < 0x200000000)) {
-                MSHookFunction(updateFuncPtr, (void *)hooked_SpeedHackUpdate, (void **)&original_SpeedHackUpdate);
-                append_diagnostic_log(@"[SpeedUnlock][Hook] SpeedHackDetector.Update Hook 安装成功（加速检测已禁用）");
-            }
-        }
-    }
+    // v2.3：暂时禁用 SpeedHackDetector.Update Hook（可能导致服务器列表打不开）
+    // 只保留 ElapseTime Hook，先确认加速效果
+    append_diagnostic_log(@"[SpeedUnlock][Hook] v2.3: 已禁用 SpeedHackDetector.Update Hook（排查服务器列表问题）");
     
     append_diagnostic_log([NSString stringWithFormat:@"[SpeedUnlock][Hook] ===== Hook安装完成，状态: %@ =====", g_hook_installed ? @"成功" : @"失败"]);
     save_diagnostic_log();
